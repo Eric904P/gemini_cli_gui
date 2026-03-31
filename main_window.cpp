@@ -20,6 +20,11 @@
 #include <QLabel>
 #include <QStringList>
 #include <QProcess>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QEventLoop>
+#include <QUrl>
 
 // --- THE SANDBOX HELPER ---
 // This safely resolves relative paths to absolute paths, ensuring the LLM 
@@ -94,6 +99,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             "CRITICAL: You are sandboxed to the working directory: %1\n"
             "All file paths you provide MUST be relative to this directory. Do not attempt to access files outside this workspace.\n\n"
             "GIT INTEGRATION: If you need to execute 'git push' or 'git pull', a GitHub Personal Access Token is available in the environment variable $GITHUB_PAT. "
+            "WEB DEPLOYMENT: You have a native 'upload_ftp' tool. You can use this to deploy HTML/CSS/JS files directly to remote servers.\n\n"
             "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
             "Acknowledge these instructions, confirm your working directory, and introduce yourself."
         ).arg(currentWorkspacePath);
@@ -333,6 +339,41 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
                                  .arg(QString::fromLocal8Bit(stdOut).trimmed())
                                  .arg(QString::fromLocal8Bit(stdErr).trimmed());
         }
+        // Route 3: Native FTP Upload
+        else if (command.action == "upload_ftp") {
+            QJsonObject ftpArgs = QJsonDocument::fromJson(command.payload.toUtf8()).object();
+            QString remoteUrl = ftpArgs["remote_url"].toString();
+            
+            QUrl url(remoteUrl);
+            url.setUserName(ftpArgs["username"].toString());
+            url.setPassword(ftpArgs["password"].toString());
+
+            QFile* fileToUpload = new QFile(command.target);
+            if (!fileToUpload->open(QIODevice::ReadOnly)) {
+                systemFeedbackMsg = "System Error: Could not open local file for upload.";
+                delete fileToUpload;
+            } else {
+                QNetworkAccessManager ftpManager;
+                QNetworkRequest request(url);
+                
+                // Execute the native PUT request
+                QNetworkReply* reply = ftpManager.put(request, fileToUpload);
+                
+                // Freeze local execution until the upload finishes
+                QEventLoop loop;
+                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                loop.exec();
+
+                if (reply->error() == QNetworkReply::NoError) {
+                    systemFeedbackMsg = "System [upload_ftp]: Upload successful to " + remoteUrl;
+                } else {
+                    systemFeedbackMsg = "System Error [upload_ftp]: " + reply->errorString();
+                }
+                
+                reply->deleteLater();
+                fileToUpload->setParent(reply); // Auto-deletes the file object when reply is destroyed
+            }
+        }
 
         // Save and send the resulting terminal output back to the LLM
         saveInteractionToDb("system", systemFeedbackMsg);
@@ -407,6 +448,29 @@ void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJs
         // We store the shell command in the 'target' variable so the UI modal can display it
         command.target = arguments["command"].toString(); 
         command.payload = "";
+
+        handleAgentActionRequest(command);
+        return;
+    }
+
+    // 6. DESTRUCTIVE ACTION: FTP Upload (Must go through the UI Modal)
+    if (functionName == "upload_ftp") {
+        QString localPath = resolveAndVerifyPath(arguments["local_path"].toString());
+        if (localPath.isEmpty()) {
+            apiClient->sendPrompt("System Error: Local file path is outside the workspace.");
+            return;
+        }
+
+        AgentCommand command;
+        command.action = functionName;
+        command.target = localPath; 
+        
+        // Pack the FTP credentials into the payload to pass to the execution engine
+        QJsonObject ftpArgs;
+        ftpArgs["remote_url"] = arguments["remote_url"].toString();
+        ftpArgs["username"] = arguments["username"].toString();
+        ftpArgs["password"] = arguments["password"].toString();
+        command.payload = QJsonDocument(ftpArgs).toJson(QJsonDocument::Compact);
 
         handleAgentActionRequest(command);
         return;
