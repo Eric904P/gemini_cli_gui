@@ -1,6 +1,7 @@
 #include "main_window.h"
 #include "gemini_api_client.h" 
 #include "settings_dialog.h"
+#include "session_dialog.h"
 
 #include <QSettings>
 #include <QVBoxLayout>
@@ -23,15 +24,16 @@
 // --- THE SANDBOX HELPER ---
 // This safely resolves relative paths to absolute paths, ensuring the LLM 
 // cannot escape the designated workspace directory (e.g., trying to read ../../System32)
-static QString resolveAndVerifyPath(const QString& relativeTarget) {
-    QSettings settings;
-    QString workspacePath = settings.value("workspace_dir", QDir::homePath()).toString();
-    QDir workspaceDir(workspacePath);
+// The new, session-aware sandbox helper
+QString MainWindow::resolveAndVerifyPath(const QString& relativeTarget) {
+    if (currentWorkspacePath.isEmpty()) return "";
 
+    QDir workspaceDir(currentWorkspacePath);
     QString absolutePath = QDir::cleanPath(workspaceDir.absoluteFilePath(relativeTarget));
 
+    // Security: Ensure the resolved path hasn't escaped the active session's workspace
     if (!absolutePath.startsWith(workspaceDir.absolutePath())) {
-        return ""; // Path escaping detected!
+        return ""; 
     }
     return absolutePath;
 }
@@ -40,47 +42,67 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUi();
     initDatabase();
     
-    currentSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    
     apiClient = new GeminiApiClient(this);
     agentController = new AgentActionManager(this);
     agentController->addWhitelistedAction("write_file"); 
     
     initializeConnections();
 
-    loadHistoryFromDb();
-
-    // Check settings for API Key AND Workspace Directory
+    // 1. GLOBAL SETTINGS CHECK (API Key Only)
     QSettings settings;
     QString storedKey = settings.value("api_key", "").toString();
-    QString storedWorkspace = settings.value("workspace_dir", "").toString();
 
-    // Force settings modal if either is missing
-    if (storedKey.isEmpty() || storedWorkspace.isEmpty()) {
+    if (storedKey.isEmpty()) {
         SettingsDialog dialog(this);
         if (dialog.exec() == QDialog::Accepted) {
             storedKey = dialog.getApiKey();
-            storedWorkspace = dialog.getWorkspaceDirectory();
         } else {
-            chatDisplay->append("<span style=\"color: red;\">Error: Application requires an API Key and Workspace. Please restart.</span>");
+            chatDisplay->append("<span style=\"color: red;\">Error: API Key required. Please restart.</span>");
             inputField->setEnabled(false);
             sendButton->setEnabled(false);
             return;
         }
     }
-
     apiClient->setApiKey(storedKey);
+
+    // 2. SESSION MANAGER LAUNCH
+    SessionDialog sessionDlg(this);
+    if (sessionDlg.exec() != QDialog::Accepted) {
+        chatDisplay->append("<span style=\"color: red;\">Error: No session selected. Please restart.</span>");
+        inputField->setEnabled(false);
+        sendButton->setEnabled(false);
+        return;
+    }
+
+    // 3. APPLY THE SELECTED SESSION
+    SessionData activeSession = sessionDlg.getSelectedSession();
+    currentSessionId = activeSession.id;
+    currentWorkspacePath = activeSession.workspace;
     
-    // Inject the dynamically generated system prompt with the strict sandbox path
-    QString systemInstructions = QString(
-        "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
-        "CRITICAL: You are sandboxed to the following working directory: %1\n"
-        "All file paths you provide to your tools MUST be relative to this directory. Do not attempt to access files outside this workspace.\n"
-        "Acknowledge these instructions, confirm your working directory, and introduce yourself."
-    ).arg(storedWorkspace);
-        
-    apiClient->sendPrompt(systemInstructions);
-}
+    // Update window title to show the active project
+    setWindowTitle(QString("Gemini Agent - %1").arg(activeSession.name));
+
+    // 4. LOAD HISTORY & INITIALIZE
+    // Load the specific chat history for THIS session
+    bool isExistingSession = loadHistoryFromDb(); 
+
+    // ONLY send the system instructions if this is a brand new project!
+    // If it's an existing project, Google already remembers the workspace.
+    if (!isExistingSession) {
+        QString systemInstructions = QString(
+            "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
+            "CRITICAL: You are sandboxed to the following working directory: %1\n"
+            "All file paths you provide to your tools MUST be relative to this directory. Do not attempt to access files outside this workspace.\n"
+            "Acknowledge these instructions, confirm your working directory, and introduce yourself."
+        ).arg(currentWorkspacePath);
+            
+        // Save the system prompt to the DB so we know the sandbox was initialized
+        saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
+        apiClient->sendPrompt(systemInstructions);
+    } else {
+        chatDisplay->append("<span style=\"color: green;\">[System: Session Restored Successfully]</span>");
+    }
+} // End of constructor
 
 MainWindow::~MainWindow() {
     if (db.isOpen()) {
@@ -107,24 +129,32 @@ void MainWindow::initDatabase() {
                "timestamp INTEGER)");
 }
 
-void MainWindow::loadHistoryFromDb() {
-    if (!db.isOpen()) return;
+bool MainWindow::loadHistoryFromDb() {
+    if (!db.isOpen()) return false;
 
-    // Fetch all interactions in chronological order
-    QSqlQuery query("SELECT role, content, api_interaction_id FROM interactions ORDER BY timestamp ASC");
+    // CRITICAL FIX: Only fetch interactions for the currently active session!
+    QSqlQuery query;
+    query.prepare("SELECT role, content, api_interaction_id FROM interactions WHERE session_id = :session_id ORDER BY timestamp ASC");
+    query.bindValue(":session_id", currentSessionId);
+    
+    if (!query.exec()) {
+        appendStandardError("Failed to load history: " + query.lastError().text());
+        return false;
+    }
+
     QString lastInteractionId;
+    bool hasMessages = false;
 
     while (query.next()) {
+        hasMessages = true;
         QString role = query.value(0).toString();
         QString content = query.value(1).toString();
         QString apiId = query.value(2).toString();
 
-        // Keep track of the most recent Google Interaction ID
         if (!apiId.isEmpty()) {
             lastInteractionId = apiId;
         }
 
-        // Repopulate the UI exactly how the user left it
         if (role == "user") {
             chatDisplay->append("<b>You:</b> " + content);
         } else if (role == "model") {
@@ -134,10 +164,11 @@ void MainWindow::loadHistoryFromDb() {
         }
     }
 
-    // CRITICAL: Hand the state back to the Gemini Client!
     if (!lastInteractionId.isEmpty()) {
         apiClient->restoreSession(lastInteractionId);
     }
+    
+    return hasMessages; // Tell the constructor if this was an existing chat
 }
 
 void MainWindow::saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId) {

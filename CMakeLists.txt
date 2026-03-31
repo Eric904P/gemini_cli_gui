@@ -24,6 +24,7 @@ add_executable(GeminiCliGui
     gemini_api_client.cpp
     agent_manager.cpp
     settings_dialog.cpp
+    session_dialog.cpp
 )
 
 # link the required qt modules to the executable

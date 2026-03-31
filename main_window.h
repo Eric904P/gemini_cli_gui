@@ -5,6 +5,7 @@
 #include <QSqlDatabase>
 #include "agent_manager.h" 
 #include <QLabel>
+#include <QString>
 
 // forward declarations
 class QVBoxLayout;
@@ -43,14 +44,16 @@ private:
 
     QSqlDatabase db;
     QString currentSessionId;
+    QString currentWorkspacePath;
 
     void setupUi();
     void initializeConnections();
     
     // local storage setup and execution
     void initDatabase();
-    void loadHistoryFromDb();
+    bool loadHistoryFromDb();
     void saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId = "");
+    QString resolveAndVerifyPath(const QString& relativeTarget);
 };
 
 #endif // MAIN_WINDOW_H
