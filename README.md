@@ -1,69 +1,88 @@
-# Gemini Native Agent (Qt C++)
+# Gemini Native Agent (C++ / Qt6)
 
-A lightweight, native desktop application built with C++ and Qt6 that interfaces directly with Google's Gemini `v1beta/interactions` API. 
+![C++](https://img.shields.io/badge/C++-17-blue.svg) ![Qt6](https://img.shields.io/badge/Qt-6.x-41CD52.svg) ![CMake](https://img.shields.io/badge/CMake-3.16+-red.svg) ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
-Unlike standard chat wrappers, this application features an **Agentic Loop** that grants the LLM the ability to execute local file operations on your machine, fully governed by a local GUI security intercept.
+**Gemini Native Agent** is an air-gapped, stateful, multi-modal End User Computing (EUC) tool and autonomous coding assistant. Built entirely in native C++ using the Qt6 framework, it bypasses traditional Node.js/Python wrappers to communicate directly with Google's Gemini REST API. 
 
-## 🚀 Key Features
+Designed with a strict **Zero-Trust Architecture**, the agent features native function calling, local OS execution, computer vision, and secure SQLite session persistence.
 
-* **Stateful Interactions API:** Utilizes the new Gemini v1beta endpoint to maintain server-side conversational state, drastically reducing input token payload sizes and bandwidth.
-* **Local UI Persistence:** Uses a lightweight SQLite database (`QtSql`) to locally store and render chat history across sessions without needing to re-send context to the LLM.
-* **Agentic Tool Calling:** The LLM is equipped with a flattened OpenAPI schema toolset, allowing it to natively request file system operations (e.g., `write_file`).
-* **Human-in-the-Loop Security:** All local OS actions requested by the agent are intercepted by a Qt modal dialog. The user must explicitly approve the `git diff` or file changes before the C++ backend executes them.
-* **Multi-Modal Ready:** Foundation laid for attaching and sending local files/code snippets directly into the context window.
+## 🚀 Enterprise-Grade Features
 
-## 🛠️ Prerequisites
+### Core Architecture
+* **Native REST Pipeline:** Utilizes `QNetworkAccessManager` for lightning-fast, asynchronous HTTP requests directly to the `gemini-2.5-flash` endpoints, eliminating heavy external runtime dependencies.
+* **Stateful Interactions:** Implements Google's `previous_interaction_id` architecture, offloading context management to the server. This results in ultra-low latency and near-zero input token costs for prolonged debugging sessions.
+* **Secure Credential Vault:** API keys and environment variables (like `GITHUB_PAT`) are encrypted and stored via `QSettings` in the native OS registry, preventing hardcoded vulnerabilities.
+* **SQLite Session Hot-Swapping:** Uses `QSqlDatabase` to persist multi-turn conversations and agent states, allowing instantaneous switching between isolated development environments.
 
-To build and run this project, you will need:
-* **C++17** compatible compiler (MSVC, GCC, or Clang)
-* **Qt 6.x** (specifically the `Core`, `Gui`, `Widgets`, `Network`, and `Sql` modules)
-* **CMake** (version 3.16 or higher)
-* **Ninja** (Recommended build system)
-* A **Google Gemini API Key** (Accessible via Google AI Studio)
+### Autonomous "Eyes and Hands" (Native Function Calling)
+The agent utilizes strict JSON schemas to natively understand and execute C++ functions on the local machine:
+* **Silent Reconnaissance:** The agent can autonomously use `read_file`, `list_directory`, and `fetch_webpage` to understand the workspace DOM/codebase without interrupting the user.
+* **Computer Vision (Windows API):** Integrates with `EnumWindowsProc` to literally "see" the desktop. The agent can compile GUI code, launch the application, target the specific window HWND, take a screenshot (`take_screenshot`), and self-correct its UI layout based on the pixels.
+* **Sub-Process Execution:** Spawns asynchronous, memory-safe `QProcess` instances to compile C++, run Python scripts, or execute complex Git workflows completely in the background.
 
-## 🏗️ Build Instructions
+### 🛡️ Zero-Trust Security Model
+Security is paramount in EUC environments. The agent operates in a highly restricted sandbox:
+* **Human-in-the-Loop Intercepts:** While reads are silent, *any* destructive or modifying action (`write_file`, shell execution, network pushes) triggers a mandatory `QMessageBox` thread-blocking modal. The action is halted until the user physically verifies the target and payload.
+* **Path Traversal Protection:** The `currentWorkspacePath` is strictly locked. The agent cannot traverse up the directory tree or access restricted OS files.
+* **Binary Token Filter:** A custom multi-modal drag-and-drop filter automatically blocks `.exe` or compiled binaries from being uploaded to the context window, protecting the API token budget and preventing payload corruption.
 
-This project uses CMake. It is recommended to perform an out-of-source build.
+---
 
-1. **Clone the repository:**
+## 🛠️ Build & Installation Instructions
+
+This application is built to be a standalone, portable executable.
+
+### Prerequisites
+* **C++ Compiler:** MSVC (Windows), GCC (Linux), or Clang (macOS) supporting C++17.
+* **CMake:** Version 3.16 or higher.
+* **Qt6:** Required modules: `Core`, `Gui`, `Widgets`, `Network`, `Sql`.
+
+### Compilation
+1. Clone the repository:
    ```bash
    git clone [https://github.com/yourusername/gemini_cli_gui.git](https://github.com/yourusername/gemini_cli_gui.git)
    cd gemini_cli_gui
    ```
-
-2. **Generate the build files:**
+2. Generate the build files using CMake:
    ```bash
-   mkdir build
-   cd build
-   cmake -G Ninja -DCMAKE_PREFIX_PATH="/path/to/your/Qt/6.x.x/compiler" ..
+   mkdir build && cd build
+   cmake ..
    ```
-   *(Note: If Qt is in your system PATH, you may omit the `CMAKE_PREFIX_PATH` flag).*
-
-3. **Compile the application:**
+3. Compile the executable:
    ```bash
-   ninja
+   cmake --build . --config Release
    ```
 
-4. **Run the executable:**
-   ```bash
-   ./GeminiCliGui
-   ```
+---
 
-## ⚙️ Usage & Configuration
+## 💻 Usage & Configuration
 
-1. **First Launch:** Upon launching the application for the first time, you will be prompted to enter your Gemini API Key. This key is securely saved in your OS's native credentials/settings manager via `QSettings`.
-2. **Chat Interface:** Use the bottom input field to send prompts. The UI will render your text and the model's responses.
-3. **Agentic Actions:** If you ask the assistant to create or modify a file (e.g., *"Create a python script that calculates the Fibonacci sequence"*), the LLM will trigger a function call.
-4. **Approval Loop:** A system dialog will appear detailing the requested action, target file, and payload. Click **Yes** to allow the C++ backend to write the file, or **No** to deny the request and feed the denial back to the LLM.
+1. **Launch the Application:** Run the compiled `GeminiCliGui` executable.
+2. **Secure Key Entry:** On first launch, the application will prompt you for your Google Gemini API Key. This is safely encrypted into your local system registry.
+3. **Session Management:** Create a new SQLite session or load an existing one from the startup modal.
+4. **Agentic Commands:** You can speak to the agent naturally. If you ask it to "create a python script that prints hello world", the agent will natively route a function call to the C++ backend, trigger the security intercept, and write the file directly to your disk upon approval.
 
-## 🧠 Architecture Overview
+---
 
-* `main_window.cpp`: Handles the core Qt UI logic, intercepts agent requests to trigger security modals, and manages the local SQLite history mapping.
-* `gemini_api_client.cpp`: The networking engine. It manages the `QNetworkAccessManager`, constructs the strict JSON/OpenAPI payloads required by the Interactions API, tracks the stateful `interaction_id`, and parses the flattened LLM responses.
-* `agent_manager.cpp`: (Controller) Executes the local OS actions once approved by the user.
+## 🧠 System Architecture
 
-## 🛡️ Security Disclaimer
+```text
+[User UI] <---> [MainWindow Router] <---> [SQLite Database]
+                        |
+                        v
+        [AgentActionManager (Security Gatekeeper)]
+                        |
+                        v
+    [GeminiApiClient (Asynchronous QNetworkAccessManager)]
+                        |
+                        v
+          [Google Gemini REST API (gemini-2.5-flash)]
+```
 
-This application grants an LLM the capability to write files to your local system. **Never bypass the human-in-the-loop security prompt.** Always review the target file path and the proposed payload before clicking "Yes". 
+---
 
-The application is configured to strictly enforce the `write_file` schema, but users are responsible for the code they allow the agent to execute on their machines.
+## 📝 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+*Developed by Lewis Curl as a demonstration of native C++ architecture, memory management, and modern End User Computing standards.*
