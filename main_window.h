@@ -6,6 +6,10 @@
 #include "agent_manager.h" 
 #include <QLabel>
 #include <QString>
+#include <QStringList>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QMimeData>
 
 // forward declarations
 class QVBoxLayout;
@@ -18,6 +22,10 @@ class QLabel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
@@ -32,6 +40,8 @@ private slots:
     void updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens);
     void openSettings();
     void switchSession();
+    void attachFiles();
+    void clearAttachments();
 
 private:
     QWidget* centralWidget;
@@ -42,6 +52,9 @@ private:
     QLabel* tokenDisplayLabel;
     QPushButton* btnSettings;
     QPushButton* btnManageSessions;
+    QPushButton* btnAttach;        
+    QPushButton* btnClearFiles;    
+    QLabel* lblAttachments;        
 
     GeminiApiClient* apiClient; 
     AgentActionManager* agentController;
@@ -49,6 +62,7 @@ private:
     QSqlDatabase db;
     QString currentSessionId;
     QString currentWorkspacePath;
+    QStringList pendingAttachments;
 
     void setupUi();
     void initializeConnections();
@@ -58,6 +72,8 @@ private:
     bool loadHistoryFromDb();
     void saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId = "");
     QString resolveAndVerifyPath(const QString& relativeTarget);
+
+    void updateAttachmentUi();
 };
 
 #endif // MAIN_WINDOW_H

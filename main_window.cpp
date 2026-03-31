@@ -25,6 +25,7 @@
 #include <QNetworkRequest>
 #include <QEventLoop>
 #include <QUrl>
+#include <QFileDialog>
 
 // --- THE SANDBOX HELPER ---
 // This safely resolves relative paths to absolute paths, ensuring the LLM 
@@ -109,6 +110,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     } else {
         chatDisplay->append("<span style=\"color: green;\">[System: Session Restored Successfully]</span>");
     }
+
+    setAcceptDrops(true); // Enable Drag and Drop
 } // End of constructor
 
 MainWindow::~MainWindow() {
@@ -218,15 +221,40 @@ void MainWindow::setupUi() {
     tokenDisplayLabel->setAlignment(Qt::AlignRight);
     tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
 
+    // --- NEW: Bottom Input Area ---
+    lblAttachments = new QLabel("", this);
+    lblAttachments->setStyleSheet("color: #0078D7; font-size: 11px; font-weight: bold;");
+    lblAttachments->hide(); // Hidden by default until a file is attached
+
+    btnClearFiles = new QPushButton("❌", this);
+    btnClearFiles->setFixedSize(24, 24);
+    btnClearFiles->setToolTip("Clear Attachments");
+    btnClearFiles->hide();
+
+    QHBoxLayout* attachmentLayout = new QHBoxLayout();
+    attachmentLayout->addWidget(lblAttachments);
+    attachmentLayout->addWidget(btnClearFiles);
+    attachmentLayout->addStretch();
+
+    QHBoxLayout* inputLayout = new QHBoxLayout();
+    btnAttach = new QPushButton("📎", this);
+    btnAttach->setFixedSize(30, 30);
+    btnAttach->setToolTip("Attach Files");
+
     inputField = new QLineEdit(this);
-    inputField->setPlaceholderText("Enter command or prompt...");
+    inputField->setPlaceholderText("Enter command, or drag and drop files here...");
 
     sendButton = new QPushButton("Send", this);
 
+    inputLayout->addWidget(btnAttach);
+    inputLayout->addWidget(inputField);
+    inputLayout->addWidget(sendButton);
+
+    // Assemble the main layout
     mainLayout->addWidget(chatDisplay);
     mainLayout->addWidget(tokenDisplayLabel);
-    mainLayout->addWidget(inputField);
-    mainLayout->addWidget(sendButton);
+    mainLayout->addLayout(attachmentLayout); // Shows pending files
+    mainLayout->addLayout(inputLayout);      // The input bar
 
     setCentralWidget(centralWidget);
     setWindowTitle("Gemini Native Agent");
@@ -238,6 +266,8 @@ void MainWindow::initializeConnections() {
     connect(inputField, &QLineEdit::returnPressed, sendButton, &QPushButton::click);
     connect(btnSettings, &QPushButton::clicked, this, &MainWindow::openSettings);
     connect(btnManageSessions, &QPushButton::clicked, this, &MainWindow::switchSession);
+    connect(btnAttach, &QPushButton::clicked, this, &MainWindow::attachFiles);
+    connect(btnClearFiles, &QPushButton::clicked, this, &MainWindow::clearAttachments);
 
     connect(apiClient, &GeminiApiClient::responseReceived, this, &MainWindow::appendStandardOutput);
     connect(apiClient, &GeminiApiClient::networkError, this, &MainWindow::appendStandardError);
@@ -264,11 +294,22 @@ void MainWindow::updateTokenDisplay(int inputTokens, int outputTokens, int total
 void MainWindow::handleSendClicked() {
     QString userInput = inputField->text();
     
-    if (!userInput.isEmpty()) {
-        chatDisplay->append("<b>You:</b> " + userInput);
-        saveInteractionToDb("user", userInput);
-        apiClient->sendPrompt(userInput);
+    if (!userInput.isEmpty() || !pendingAttachments.isEmpty()) {
+        
+        QString displayMsg = userInput;
+        if (!pendingAttachments.isEmpty()) {
+            displayMsg += QString(" <i>[Attached %1 file(s)]</i>").arg(pendingAttachments.size());
+        }
+
+        chatDisplay->append("<b>You:</b> " + displayMsg);
+        saveInteractionToDb("user", displayMsg);
+        
+        // --- WE WILL UPDATE THE API CLIENT NEXT TO ACCEPT THIS LIST ---
+        // apiClient->sendPrompt(userInput, pendingAttachments); 
+        apiClient->sendPrompt(userInput); // (Temporary until API is updated)
+        
         inputField->clear();
+        clearAttachments(); // Wipe the pending list after sending
     }
 }
 
@@ -525,5 +566,53 @@ void MainWindow::switchSession() {
         } else {
             chatDisplay->append("<span style=\"color: green;\">[System: Switched to existing session]</span>");
         }
+    }
+}
+
+// --- MULTI-MODAL & ATTACHMENT LOGIC ---
+
+void MainWindow::attachFiles() {
+    QStringList files = QFileDialog::getOpenFileNames(this, "Select Files to Attach");
+    if (!files.isEmpty()) {
+        pendingAttachments.append(files);
+        updateAttachmentUi();
+    }
+}
+
+void MainWindow::clearAttachments() {
+    pendingAttachments.clear();
+    updateAttachmentUi();
+}
+
+void MainWindow::updateAttachmentUi() {
+    if (pendingAttachments.isEmpty()) {
+        lblAttachments->hide();
+        btnClearFiles->hide();
+    } else {
+        lblAttachments->setText(QString("📎 %1 file(s) attached").arg(pendingAttachments.size()));
+        lblAttachments->show();
+        btnClearFiles->show();
+    }
+}
+
+// Drag & Drop: Accept the event if it contains URLs (files)
+void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+    }
+}
+
+// Drag & Drop: Extract the file paths when dropped
+void MainWindow::dropEvent(QDropEvent *event) {
+    const QMimeData *mimeData = event->mimeData();
+    if (mimeData->hasUrls()) {
+        QList<QUrl> urlList = mimeData->urls();
+        for (const QUrl &url : urlList) {
+            if (url.isLocalFile()) {
+                pendingAttachments.append(url.toLocalFile());
+            }
+        }
+        updateAttachmentUi();
+        event->acceptProposedAction();
     }
 }
