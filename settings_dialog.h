@@ -11,17 +11,19 @@ class SettingsDialog : public QDialog {
 public:
     explicit SettingsDialog(QWidget* parent = nullptr);
     QString getApiKey() const;
-    QString getWorkspaceDirectory() const; // NEW
+    QString getWorkspaceDirectory() const;
+    QString getGithubPat() const;
 
 private slots:
-    void browseWorkspace(); // NEW: Opens folder picker
+    void browseWorkspace();
     void saveSettings();
 
 private:
     QLineEdit* apiKeyInput;
-    QLineEdit* workspaceInput; // NEW
-    QPushButton* browseButton; // NEW
+    QLineEdit* workspaceInput;
+    QPushButton* browseButton;
     QPushButton* saveButton;
+    QLineEdit* githubPatInput;
 };
 
 #endif // SETTINGS_DIALOG_H

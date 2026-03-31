@@ -19,6 +19,13 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     apiKeyInput->setEchoMode(QLineEdit::PasswordEchoOnEdit);
     mainLayout->addWidget(apiKeyInput);
 
+    // GitHub PAT UI
+    mainLayout->addWidget(new QLabel("GitHub Personal Access Token (Optional):"));
+    githubPatInput = new QLineEdit(this);
+    githubPatInput->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+    githubPatInput->setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxx");
+    mainLayout->addWidget(githubPatInput);
+
     // Workspace UI
     mainLayout->addWidget(new QLabel("Agent Workspace (Sandbox Directory):"));
     QHBoxLayout* wsLayout = new QHBoxLayout();
@@ -37,6 +44,7 @@ SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
     QSettings settings;
     apiKeyInput->setText(settings.value("api_key", "").toString());
     workspaceInput->setText(settings.value("workspace_dir", QDir::homePath()).toString());
+    githubPatInput->setText(settings.value("github_pat", "").toString());
 
     // Connections
     connect(browseButton, &QPushButton::clicked, this, &SettingsDialog::browseWorkspace);
@@ -61,9 +69,11 @@ void SettingsDialog::saveSettings() {
     QSettings settings;
     settings.setValue("api_key", apiKeyInput->text().trimmed());
     settings.setValue("workspace_dir", workspaceInput->text().trimmed());
-    
+    settings.setValue("github_pat", githubPatInput->text().trimmed());
+
     accept();
 }
 
 QString SettingsDialog::getApiKey() const { return apiKeyInput->text().trimmed(); }
 QString SettingsDialog::getWorkspaceDirectory() const { return workspaceInput->text().trimmed(); }
+QString SettingsDialog::getGithubPat() const { return githubPatInput->text().trimmed(); }

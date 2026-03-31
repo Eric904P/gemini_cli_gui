@@ -91,12 +91,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!isExistingSession) {
         QString systemInstructions = QString(
             "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
-            "CRITICAL: You are sandboxed to the following working directory: %1\n"
-            "All file paths you provide to your tools MUST be relative to this directory. Do not attempt to access files outside this workspace.\n"
+            "CRITICAL: You are sandboxed to the working directory: %1\n"
+            "All file paths you provide MUST be relative to this directory. Do not attempt to access files outside this workspace.\n\n"
+            "GIT INTEGRATION: If you need to execute 'git push' or 'git pull', a GitHub Personal Access Token is available in the environment variable $GITHUB_PAT. "
+            "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
             "Acknowledge these instructions, confirm your working directory, and introduce yourself."
         ).arg(currentWorkspacePath);
             
-        // Save the system prompt to the DB so we know the sandbox was initialized
         saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
         apiClient->sendPrompt(systemInstructions);
     } else {
@@ -194,6 +195,16 @@ void MainWindow::setupUi() {
     centralWidget = new QWidget(this);
     mainLayout = new QVBoxLayout(centralWidget);
 
+    QHBoxLayout* topBarLayout = new QHBoxLayout();
+    btnManageSessions = new QPushButton("📁 Switch Session", this);
+    btnSettings = new QPushButton("⚙️ Settings", this);
+    
+    topBarLayout->addWidget(btnManageSessions);
+    topBarLayout->addStretch(); // Pushes settings to the far right
+    topBarLayout->addWidget(btnSettings);
+    
+    mainLayout->addLayout(topBarLayout);
+
     chatDisplay = new QTextEdit(this);
     chatDisplay->setReadOnly(true);
 
@@ -219,6 +230,8 @@ void MainWindow::setupUi() {
 void MainWindow::initializeConnections() {
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::handleSendClicked);
     connect(inputField, &QLineEdit::returnPressed, sendButton, &QPushButton::click);
+    connect(btnSettings, &QPushButton::clicked, this, &MainWindow::openSettings);
+    connect(btnManageSessions, &QPushButton::clicked, this, &MainWindow::switchSession);
 
     connect(apiClient, &GeminiApiClient::responseReceived, this, &MainWindow::appendStandardOutput);
     connect(apiClient, &GeminiApiClient::networkError, this, &MainWindow::appendStandardError);
@@ -288,11 +301,20 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
         } 
         // Route 2: Shell/Terminal Execution
         else if (command.action == "execute_shell_command") {
-            QSettings settings;
-            QString workspacePath = settings.value("workspace_dir", QDir::homePath()).toString();
-
             QProcess process;
-            process.setWorkingDirectory(workspacePath); // Lock execution to the sandbox
+            process.setWorkingDirectory(currentWorkspacePath); 
+
+            // --- NEW: Inject Environment Variables ---
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            QSettings settings;
+            QString githubPat = settings.value("github_pat", "").toString();
+            
+            if (!githubPat.isEmpty()) {
+                env.insert("GITHUB_PAT", githubPat);
+                env.insert("GITHUB_TOKEN", githubPat); // Standard fallback for gh cli
+            }
+            process.setProcessEnvironment(env);
+            // -----------------------------------------
 
             // Cross-platform shell wrapper
             #ifdef Q_OS_WIN
@@ -301,14 +323,11 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
                 process.start("/bin/sh", QStringList() << "-c" << command.target);
             #endif
 
-            // Wait up to 15 seconds for the command to finish compiling/running
             process.waitForFinished(15000); 
 
-            // Capture the raw terminal output
             QByteArray stdOut = process.readAllStandardOutput();
             QByteArray stdErr = process.readAllStandardError();
 
-            // Format the feedback exactly like a terminal window for the LLM
             systemFeedbackMsg = QString("System [execute_shell_command]:\nExit Code: %1\nSTDOUT:\n%2\nSTDERR:\n%3")
                                  .arg(process.exitCode())
                                  .arg(QString::fromLocal8Bit(stdOut).trimmed())
@@ -391,5 +410,56 @@ void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJs
 
         handleAgentActionRequest(command);
         return;
+    }
+}
+
+// --- TOOLBAR LOGIC ---
+
+void MainWindow::openSettings() {
+    SettingsDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        // Update the live API client if the user changed their key
+        QSettings settings;
+        apiClient->setApiKey(settings.value("api_key").toString());
+        
+        chatDisplay->append("<span style=\"color: green;\">[System: Settings updated successfully]</span>");
+    }
+}
+
+void MainWindow::switchSession() {
+    SessionDialog sessionDlg(this);
+    if (sessionDlg.exec() == QDialog::Accepted) {
+        SessionData activeSession = sessionDlg.getSelectedSession();
+
+        // Prevent reloading if they picked the session they are already in
+        if (activeSession.id == currentSessionId) return;
+
+        // Apply new session data
+        currentSessionId = activeSession.id;
+        currentWorkspacePath = activeSession.workspace;
+        setWindowTitle(QString("Gemini Agent - %1").arg(activeSession.name));
+
+        // Wipe the UI and reset the Google API state to start fresh
+        chatDisplay->clear();
+        apiClient->resetSession(); 
+
+        // Load the new session's history
+        bool isExistingSession = loadHistoryFromDb();
+
+        if (!isExistingSession) {
+            QString systemInstructions = QString(
+                "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
+                "CRITICAL: You are sandboxed to the working directory: %1\n"
+                "All file paths you provide MUST be relative to this directory. Do not attempt to access files outside this workspace.\n\n"
+                "GIT INTEGRATION: If you need to execute 'git push' or 'git pull', a GitHub Personal Access Token is available in the environment variable $GITHUB_PAT. "
+                "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
+                "Acknowledge these instructions, confirm your working directory, and introduce yourself."
+            ).arg(currentWorkspacePath);
+                
+            saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
+            apiClient->sendPrompt(systemInstructions);
+        } else {
+            chatDisplay->append("<span style=\"color: green;\">[System: Switched to existing session]</span>");
+        }
     }
 }

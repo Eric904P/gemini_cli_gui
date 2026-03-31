@@ -30,6 +30,8 @@ private slots:
     void handleAgentActionRequest(const AgentCommand& command);
     void handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments);
     void updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens);
+    void openSettings();
+    void switchSession();
 
 private:
     QWidget* centralWidget;
@@ -38,6 +40,8 @@ private:
     QLineEdit* inputField;
     QPushButton* sendButton;
     QLabel* tokenDisplayLabel;
+    QPushButton* btnSettings;
+    QPushButton* btnManageSessions;
 
     GeminiApiClient* apiClient; 
     AgentActionManager* agentController;
