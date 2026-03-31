@@ -168,6 +168,18 @@ QJsonArray GeminiApiClient::defineAvailableTools() const {
     fetchWebpageTool["parameters"] = fwParams;
     toolsArray.append(fetchWebpageTool);
 
+    // --- TOOL 7: take_screenshot ---
+    QJsonObject tsParams; 
+    tsParams["type"] = "OBJECT"; 
+    tsParams["properties"] = QJsonObject(); // No parameters needed
+    
+    QJsonObject screenshotTool;
+    screenshotTool["type"] = "function"; 
+    screenshotTool["name"] = "take_screenshot";
+    screenshotTool["description"] = "Takes a screenshot of the active GUI application you just executed to visually verify the UI layout or read errors.";
+    screenshotTool["parameters"] = tsParams;
+    toolsArray.append(screenshotTool);
+
     return toolsArray;
 }
 

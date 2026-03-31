@@ -10,6 +10,8 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMimeData>
+#include <QProcess>
+#include <QPixmap>
 
 // forward declarations
 class QVBoxLayout;
@@ -54,7 +56,8 @@ private:
     QPushButton* btnManageSessions;
     QPushButton* btnAttach;        
     QPushButton* btnClearFiles;    
-    QLabel* lblAttachments;        
+    QLabel* lblAttachments;     
+    QProcess* agentProcess;   
 
     GeminiApiClient* apiClient; 
     AgentActionManager* agentController;
@@ -75,6 +78,8 @@ private:
 
     void updateAttachmentUi();
     QString buildSystemPrompt();
+
+    QPixmap captureProcessWindow(qint64 processId);
 };
 
 #endif // MAIN_WINDOW_H

@@ -26,6 +26,9 @@
 #include <QEventLoop>
 #include <QUrl>
 #include <QFileDialog>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QWindow>
 
 // --- THE SANDBOX HELPER ---
 // This safely resolves relative paths to absolute paths, ensuring the LLM 
@@ -53,6 +56,7 @@ QString MainWindow::buildSystemPrompt() {
         "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
         "WEB DEPLOYMENT: You have a native 'upload_ftp' tool. You can use this to deploy HTML/CSS/JS files directly to remote servers.\n\n"
         "WEB BROWSING: You have a 'fetch_webpage' tool. Use it to verify your web deployments by reading the live DOM, or to fetch external documentation.\n\n"
+        "CODE EXECUTION & TESTING: You can test the code you write! Use `execute_shell_command` to compile and run C++/Java, or execute Python/Node scripts. You will receive the terminal STDOUT/STDERR exactly as an end-user would see it.\n\n"
         "Acknowledge these instructions, confirm your working directory, and introduce yourself."
     ).arg(currentWorkspacePath);
 }
@@ -63,7 +67,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     apiClient = new GeminiApiClient(this);
     agentController = new AgentActionManager(this);
-    agentController->addWhitelistedAction("write_file"); 
+    agentController->addWhitelistedAction("write_file");
+    agentProcess = new QProcess(this); 
     
     initializeConnections();
 
@@ -355,37 +360,52 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
         } 
         // Route 2: Shell/Terminal Execution
         else if (command.action == "execute_shell_command") {
-            QProcess process;
-            process.setWorkingDirectory(currentWorkspacePath); 
+            // 1. Clean up any previously running GUI processes before starting a new one
+            if (agentProcess->state() == QProcess::Running) {
+                agentProcess->terminate();
+                agentProcess->waitForFinished(2000); 
+            }
 
-            // --- NEW: Inject Environment Variables ---
+            agentProcess->setWorkingDirectory(currentWorkspacePath); 
+
+            // 2. Inject Environment Variables (GitHub PAT)
             QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
             QSettings settings;
             QString githubPat = settings.value("github_pat", "").toString();
             
             if (!githubPat.isEmpty()) {
                 env.insert("GITHUB_PAT", githubPat);
-                env.insert("GITHUB_TOKEN", githubPat); // Standard fallback for gh cli
+                env.insert("GITHUB_TOKEN", githubPat); 
             }
-            process.setProcessEnvironment(env);
-            // -----------------------------------------
+            agentProcess->setProcessEnvironment(env);
 
-            // Cross-platform shell wrapper
+            // 3. Cross-platform shell wrapper
             #ifdef Q_OS_WIN
-                process.start("cmd.exe", QStringList() << "/c" << command.target);
+                agentProcess->start("cmd.exe", QStringList() << "/c" << command.target);
             #else
-                process.start("/bin/sh", QStringList() << "-c" << command.target);
+                agentProcess->start("/bin/sh", QStringList() << "-c" << command.target);
             #endif
 
-            process.waitForFinished(15000); 
+            // 4. THE HYBRID WAIT LOGIC
+            // Wait up to 5 seconds for the command to finish naturally (e.g., git, cmake, npm)
+            bool finished = agentProcess->waitForFinished(5000); 
 
-            QByteArray stdOut = process.readAllStandardOutput();
-            QByteArray stdErr = process.readAllStandardError();
+            if (finished) {
+                // It was a quick CLI command. Capture the terminal text!
+                QByteArray stdOut = agentProcess->readAllStandardOutput();
+                QByteArray stdErr = agentProcess->readAllStandardError();
 
-            systemFeedbackMsg = QString("System [execute_shell_command]:\nExit Code: %1\nSTDOUT:\n%2\nSTDERR:\n%3")
-                                 .arg(process.exitCode())
-                                 .arg(QString::fromLocal8Bit(stdOut).trimmed())
-                                 .arg(QString::fromLocal8Bit(stdErr).trimmed());
+                systemFeedbackMsg = QString("System [execute_shell_command]:\nExit Code: %1\nSTDOUT:\n%2\nSTDERR:\n%3")
+                                     .arg(agentProcess->exitCode())
+                                     .arg(QString::fromLocal8Bit(stdOut).trimmed())
+                                     .arg(QString::fromLocal8Bit(stdErr).trimmed());
+            } else {
+                // It is still running! It's likely a GUI app or a persistent local server.
+                // Leave it running in the background and tell the agent the PID.
+                systemFeedbackMsg = QString("System [execute_shell_command]: Process started and is running in the background. Process ID: %1\n"
+                                            "(Note: If this is a GUI application, you may now use the take_screenshot tool).")
+                                     .arg(agentProcess->processId());
+            }
         }
         // Route 3: Native FTP Upload
         else if (command.action == "upload_ftp") {
@@ -422,6 +442,36 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
                 fileToUpload->setParent(reply); // Auto-deletes the file object when reply is destroyed
             }
         }
+        // Route 4: Process-Isolated Screenshot
+        else if (command.action == "take_screenshot") {
+            qint64 pid = agentProcess->processId();
+            
+            if (pid == 0 || agentProcess->state() != QProcess::Running) {
+                systemFeedbackMsg = "System Error: No active GUI application is currently running to screenshot.";
+            } else {
+                QPixmap croppedShot = captureProcessWindow(pid);
+                
+                // VISUAL SECURITY INTERCEPT: Show the user the cropped image!
+                QMessageBox imgBox(this);
+                imgBox.setWindowTitle("Security Intercept: Approve Image");
+                imgBox.setText("The agent wants to send this image to the API. Do you approve?");
+                imgBox.setIconPixmap(croppedShot.scaledToWidth(400, Qt::SmoothTransformation));
+                imgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                
+                if (imgBox.exec() == QMessageBox::Yes) {
+                    // Save the image to the workspace so the agent can reference it
+                    QString savePath = QDir(currentWorkspacePath).absoluteFilePath("agent_vision_capture.png");
+                    croppedShot.save(savePath, "PNG");
+                    
+                    systemFeedbackMsg = QString("System [take_screenshot]: Success. Image saved locally as '%1'. Please read the file to analyze the UI.").arg("agent_vision_capture.png");
+                    
+                    // Note: To send this directly in the API stream without the agent re-reading it, 
+                    // you would base64 encode it here and inject it into the QJsonObject payload.
+                } else {
+                    systemFeedbackMsg = "System Error: The human user DENIED the screenshot request due to privacy concerns.";
+                }
+            }
+        }
 
         // Save and send the resulting terminal output back to the LLM
         saveInteractionToDb("system", systemFeedbackMsg);
@@ -433,6 +483,58 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
         saveInteractionToDb("system", failureMsg);
         apiClient->sendPrompt(failureMsg);
     }
+}
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+
+struct WindowSearchData {
+    DWORD pid;
+    HWND hwnd;
+};
+
+// Callback to find the window owned by our specific Process ID
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    WindowSearchData* data = reinterpret_cast<WindowSearchData*>(lParam);
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    
+    // Check if the window belongs to the PID and is actually visible
+    if (processId == data->pid && IsWindowVisible(hwnd)) {
+        data->hwnd = hwnd;
+        return FALSE; // Found it, stop searching
+    }
+    return TRUE;
+}
+#endif
+
+QPixmap MainWindow::captureProcessWindow(qint64 processId) {
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen) return QPixmap();
+
+    // Grab the entire desktop first
+    QPixmap fullScreen = screen->grabWindow(0);
+
+#ifdef Q_OS_WIN
+    WindowSearchData searchData = { static_cast<DWORD>(processId), nullptr };
+    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&searchData));
+
+    if (searchData.hwnd) {
+        RECT rect;
+        if (GetWindowRect(searchData.hwnd, &rect)) {
+            // CROP the screenshot strictly to the application's boundary!
+            int x = rect.left;
+            int y = rect.top;
+            int width = rect.right - rect.left;
+            int height = rect.bottom - rect.top;
+            
+            return fullScreen.copy(x, y, width, height);
+        }
+    }
+#endif
+
+    // Fallback if the OS isn't Windows or the window wasn't found
+    return fullScreen; 
 }
 
 // --- THE FUNCTION ROUTER ---
@@ -547,6 +649,15 @@ void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJs
         reply->deleteLater();
         saveInteractionToDb("system", result);
         apiClient->sendPrompt(result); // Feed the HTML straight back to the LLM
+        return;
+    }
+
+    // 8. VISUAL ACTION: Take Screenshot (Must go through UI Modal)
+    if (functionName == "take_screenshot") {
+        AgentCommand command;
+        command.action = functionName;
+        command.target = "GUI Application";
+        handleAgentActionRequest(command);
         return;
     }
 }
