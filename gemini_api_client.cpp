@@ -195,17 +195,16 @@ QJsonArray GeminiApiClient::defineAvailableTools() const {
 
     // --- TOOL 5: upload_ftp ---
     QJsonObject ftpLocal; ftpLocal["type"] = "STRING"; ftpLocal["description"] = "Relative path of the local file to upload.";
-    QJsonObject ftpRemote; ftpRemote["type"] = "STRING"; ftpRemote["description"] = "Full FTP URL (e.g., ftp://server.com/path/index.html).";
-    QJsonObject ftpUser; ftpUser["type"] = "STRING"; ftpUser["description"] = "FTP Username.";
-    QJsonObject ftpPass; ftpPass["type"] = "STRING"; ftpPass["description"] = "FTP Password.";
-    QJsonObject ftpProps; ftpProps["local_path"] = ftpLocal; ftpProps["remote_url"] = ftpRemote; ftpProps["username"] = ftpUser; ftpProps["password"] = ftpPass;
-    QJsonArray ftpReq; ftpReq.append("local_path"); ftpReq.append("remote_url"); ftpReq.append("username"); ftpReq.append("password");
+    QJsonObject ftpRemote; ftpRemote["type"] = "STRING"; ftpRemote["description"] = "The destination directory/file on the server (e.g., /public_html/index.html).";
+    
+    QJsonObject ftpProps; ftpProps["local_path"] = ftpLocal; ftpProps["remote_path"] = ftpRemote; 
+    QJsonArray ftpReq; ftpReq.append("local_path"); ftpReq.append("remote_path");
     QJsonObject ftpParams; ftpParams["type"] = "OBJECT"; ftpParams["properties"] = ftpProps; ftpParams["required"] = ftpReq;
 
     QJsonObject uploadFtpTool;
     uploadFtpTool["type"] = "function"; 
     uploadFtpTool["name"] = "upload_ftp";
-    uploadFtpTool["description"] = "Natively uploads a local file to a remote FTP server.";
+    uploadFtpTool["description"] = "Uploads a local file to the pre-configured FTP server. You only need to provide the local file and remote destination path.";
     uploadFtpTool["parameters"] = ftpParams;
     toolsArray.append(uploadFtpTool);
 

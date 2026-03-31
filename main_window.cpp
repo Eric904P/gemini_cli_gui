@@ -551,9 +551,7 @@ void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJs
         command.target = localPath; 
         
         QJsonObject ftpArgs;
-        ftpArgs["remote_url"] = arguments["remote_url"].toString();
-        ftpArgs["username"] = arguments["username"].toString();
-        ftpArgs["password"] = arguments["password"].toString();
+        ftpArgs["remote_path"] = arguments["remote_path"].toString();
         command.payload = QJsonDocument(ftpArgs).toJson(QJsonDocument::Compact);
 
         handleAgentActionRequest(command);
@@ -694,33 +692,55 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
         // Route 3: Native FTP Upload
         else if (command.action == "upload_ftp") {
             QJsonObject ftpArgs = QJsonDocument::fromJson(command.payload.toUtf8()).object();
-            QString remoteUrl = ftpArgs["remote_url"].toString();
-            
-            QUrl url(remoteUrl);
-            url.setUserName(ftpArgs["username"].toString());
-            url.setPassword(ftpArgs["password"].toString());
+            QString remotePath = ftpArgs["remote_path"].toString();
 
-            QFile* fileToUpload = new QFile(command.target);
-            if (!fileToUpload->open(QIODevice::ReadOnly)) {
-                systemFeedbackMsg = "System Error: Could not open local file for upload.";
-                delete fileToUpload;
+            // Pull credentials globally from the OS Registry
+            QSettings settings;
+            QString host = settings.value("ftp_host", "").toString();
+            int port = settings.value("ftp_port", 21).toInt();
+            QString username = settings.value("ftp_username", "").toString();
+            QString password = settings.value("ftp_password", "").toString();
+
+            if (host.isEmpty()) {
+                systemFeedbackMsg = "System Error: FTP Host is not configured. Please set it up in Global Settings.";
             } else {
-                QNetworkAccessManager ftpManager;
-                QNetworkRequest request(url);
-                QNetworkReply* reply = ftpManager.put(request, fileToUpload);
-                
-                QEventLoop loop;
-                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-                loop.exec();
-
-                if (reply->error() == QNetworkReply::NoError) {
-                    systemFeedbackMsg = "System [upload_ftp]: Upload successful to " + remoteUrl;
-                } else {
-                    systemFeedbackMsg = "System Error [upload_ftp]: " + reply->errorString();
+                // Ensure proper path formatting
+                if (!remotePath.startsWith("/")) {
+                    remotePath.prepend("/");
                 }
-                
-                reply->deleteLater();
-                fileToUpload->setParent(reply); 
+
+                // Construct the secure URL
+                QUrl url;
+                url.setScheme("ftp");
+                url.setHost(host);
+                url.setPort(port);
+                url.setPath(remotePath);
+                url.setUserName(username);
+                url.setPassword(password);
+
+                QFile* fileToUpload = new QFile(command.target);
+                if (!fileToUpload->open(QIODevice::ReadOnly)) {
+                    systemFeedbackMsg = "System Error: Could not open local file for upload.";
+                    delete fileToUpload;
+                } else {
+                    QNetworkAccessManager ftpManager;
+                    QNetworkRequest request(url);
+                    QNetworkReply* reply = ftpManager.put(request, fileToUpload);
+                    
+                    QEventLoop loop;
+                    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                    loop.exec();
+
+                    if (reply->error() == QNetworkReply::NoError) {
+                        // Use toString(QUrl::RemovePassword) to keep credentials out of the chat history!
+                        systemFeedbackMsg = "System [upload_ftp]: Upload successful to " + url.toString(QUrl::RemovePassword);
+                    } else {
+                        systemFeedbackMsg = "System Error [upload_ftp]: " + reply->errorString();
+                    }
+                    
+                    reply->deleteLater();
+                    fileToUpload->setParent(reply); 
+                }
             }
         }
         
