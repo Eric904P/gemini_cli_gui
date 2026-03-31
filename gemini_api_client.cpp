@@ -48,41 +48,47 @@ QNetworkRequest GeminiApiClient::createRequest() const {
 }
 
 QJsonArray GeminiApiClient::defineAvailableTools() const {
-    // 1. Define the parameters using UPPERCASE Gemini Schema types
-    QJsonObject payloadProp;
-    payloadProp["type"] = "STRING"; 
-    payloadProp["description"] = "The exact text content to write into the file.";
-
-    QJsonObject targetProp;
-    targetProp["type"] = "STRING"; 
-    targetProp["description"] = "The file path or name (e.g., test.txt).";
-
-    QJsonObject propertiesObj;
-    propertiesObj["payload"] = payloadProp;
-    propertiesObj["target"] = targetProp;
-
-    QJsonArray requiredArgs;
-    requiredArgs.append("target");
-    requiredArgs.append("payload");
-
-    QJsonObject parametersObj;
-    parametersObj["type"] = "OBJECT"; 
-    parametersObj["properties"] = propertiesObj;
-    parametersObj["required"] = requiredArgs;
-
-    // 2. Construct the single, FLATTENED tool object
-    QJsonObject toolObj;
-    
-    // The required discriminator
-    toolObj["type"] = "function"; 
-    
-    // The function details go DIRECTLY on the tool object
-    toolObj["name"] = "write_file";
-    toolObj["description"] = "Writes content to a local file on the user's system.";
-    toolObj["parameters"] = parametersObj;
-
     QJsonArray toolsArray;
-    toolsArray.append(toolObj);
+
+    // --- TOOL 1: write_file ---
+    QJsonObject wfPayload; wfPayload["type"] = "STRING"; wfPayload["description"] = "The exact text content to write.";
+    QJsonObject wfTarget; wfTarget["type"] = "STRING"; wfTarget["description"] = "Relative file path (e.g., src/main.cpp).";
+    QJsonObject wfProps; wfProps["payload"] = wfPayload; wfProps["target"] = wfTarget;
+    QJsonArray wfReq; wfReq.append("target"); wfReq.append("payload");
+    QJsonObject wfParams; wfParams["type"] = "OBJECT"; wfParams["properties"] = wfProps; wfParams["required"] = wfReq;
+    
+    QJsonObject writeFileTool;
+    writeFileTool["type"] = "function"; // The critical flattened schema discriminator!
+    writeFileTool["name"] = "write_file";
+    writeFileTool["description"] = "Writes content to a local file in the workspace.";
+    writeFileTool["parameters"] = wfParams;
+    toolsArray.append(writeFileTool);
+
+    // --- TOOL 2: read_file ---
+    QJsonObject rfTarget; rfTarget["type"] = "STRING"; rfTarget["description"] = "Relative file path to read (e.g., CMakeLists.txt).";
+    QJsonObject rfProps; rfProps["target"] = rfTarget;
+    QJsonArray rfReq; rfReq.append("target");
+    QJsonObject rfParams; rfParams["type"] = "OBJECT"; rfParams["properties"] = rfProps; rfParams["required"] = rfReq;
+
+    QJsonObject readFileTool;
+    readFileTool["type"] = "function"; 
+    readFileTool["name"] = "read_file";
+    readFileTool["description"] = "Reads and returns the exact text content of a local file.";
+    readFileTool["parameters"] = rfParams;
+    toolsArray.append(readFileTool);
+
+    // --- TOOL 3: list_directory ---
+    QJsonObject ldTarget; ldTarget["type"] = "STRING"; ldTarget["description"] = "Relative directory path to list. Use '.' for the root workspace.";
+    QJsonObject ldProps; ldProps["target"] = ldTarget;
+    QJsonArray ldReq; ldReq.append("target");
+    QJsonObject ldParams; ldParams["type"] = "OBJECT"; ldParams["properties"] = ldProps; ldParams["required"] = ldReq;
+
+    QJsonObject listDirTool;
+    listDirTool["type"] = "function"; 
+    listDirTool["name"] = "list_directory";
+    listDirTool["description"] = "Lists all files and folders in a specified directory.";
+    listDirTool["parameters"] = ldParams;
+    toolsArray.append(listDirTool);
 
     return toolsArray;
 }

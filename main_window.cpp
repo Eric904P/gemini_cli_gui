@@ -14,12 +14,31 @@
 #include <QDateTime>
 #include <QUuid>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QLabel>
+#include <QStringList>
+
+// --- THE SANDBOX HELPER ---
+// This safely resolves relative paths to absolute paths, ensuring the LLM 
+// cannot escape the designated workspace directory (e.g., trying to read ../../System32)
+static QString resolveAndVerifyPath(const QString& relativeTarget) {
+    QSettings settings;
+    QString workspacePath = settings.value("workspace_dir", QDir::homePath()).toString();
+    QDir workspaceDir(workspacePath);
+
+    QString absolutePath = QDir::cleanPath(workspaceDir.absoluteFilePath(relativeTarget));
+
+    if (!absolutePath.startsWith(workspaceDir.absolutePath())) {
+        return ""; // Path escaping detected!
+    }
+    return absolutePath;
+}
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUi();
     initDatabase();
     
-    // generate a unique session id for this launch
     currentSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     
     apiClient = new GeminiApiClient(this);
@@ -28,30 +47,28 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     
     initializeConnections();
 
-    // check the system registry for an existing key
+    // Check settings for API Key AND Workspace Directory
     QSettings settings;
     QString storedKey = settings.value("api_key", "").toString();
+    QString storedWorkspace = settings.value("workspace_dir", "").toString();
 
-    // if no key is found, force the user to enter one via the modal
-    if (storedKey.isEmpty()) {
+    // Force settings modal if either is missing
+    if (storedKey.isEmpty() || storedWorkspace.isEmpty()) {
         SettingsDialog dialog(this);
         if (dialog.exec() == QDialog::Accepted) {
             storedKey = dialog.getApiKey();
+            storedWorkspace = dialog.getWorkspaceDirectory();
         } else {
-            // if they close the dialog without saving, disable the chat
-            chatDisplay->append("<span style=\"color: red;\">error: application cannot function without an api key. please restart.</span>");
+            chatDisplay->append("<span style=\"color: red;\">Error: Application requires an API Key and Workspace. Please restart.</span>");
             inputField->setEnabled(false);
             sendButton->setEnabled(false);
             return;
         }
     }
 
-    // inject the secured key into the api client
     apiClient->setApiKey(storedKey);
     
-    QString storedWorkspace = settings.value("workspace_dir", QDir::homePath()).toString();
-
-    // Dynamically build the system prompt
+    // Inject the dynamically generated system prompt with the strict sandbox path
     QString systemInstructions = QString(
         "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
         "CRITICAL: You are sandboxed to the following working directory: %1\n"
@@ -73,7 +90,7 @@ void MainWindow::initDatabase() {
     db.setDatabaseName("interactions.db");
 
     if (!db.open()) {
-        QMessageBox::critical(this, "database error", "failed to open local sqlite database.");
+        QMessageBox::critical(this, "Database Error", "Failed to open local SQLite database.");
         return;
     }
 
@@ -102,36 +119,33 @@ void MainWindow::saveInteractionToDb(const QString& role, const QString& content
     query.bindValue(":timestamp", QDateTime::currentSecsSinceEpoch());
 
     if (!query.exec()) {
-        appendStandardError("failed to save interaction to database: " + query.lastError().text());
+        appendStandardError("Failed to save interaction to database: " + query.lastError().text());
     }
 }
 
 void MainWindow::setupUi() {
-    // initialize the central container and its layout manager
     centralWidget = new QWidget(this);
     mainLayout = new QVBoxLayout(centralWidget);
 
-    // instantiate the core interface elements
     chatDisplay = new QTextEdit(this);
     chatDisplay->setReadOnly(true);
-
-    inputField = new QLineEdit(this);
-    inputField->setPlaceholderText("enter command or prompt...");
-
-    sendButton = new QPushButton("send", this);
 
     tokenDisplayLabel = new QLabel("Context Load: 0 tokens | Last Output: 0 tokens", this);
     tokenDisplayLabel->setAlignment(Qt::AlignRight);
     tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
 
-    // assemble the layout structure
+    inputField = new QLineEdit(this);
+    inputField->setPlaceholderText("Enter command or prompt...");
+
+    sendButton = new QPushButton("Send", this);
+
     mainLayout->addWidget(chatDisplay);
     mainLayout->addWidget(tokenDisplayLabel);
     mainLayout->addWidget(inputField);
     mainLayout->addWidget(sendButton);
 
     setCentralWidget(centralWidget);
-    setWindowTitle("gemini native api interface");
+    setWindowTitle("Gemini Native Agent");
     resize(800, 600);
 }
 
@@ -139,41 +153,46 @@ void MainWindow::initializeConnections() {
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::handleSendClicked);
     connect(inputField, &QLineEdit::returnPressed, sendButton, &QPushButton::click);
 
-    // standard text goes straight to the ui and database
     connect(apiClient, &GeminiApiClient::responseReceived, this, &MainWindow::appendStandardOutput);
     connect(apiClient, &GeminiApiClient::networkError, this, &MainWindow::appendStandardError);
-    
-    // native function calls are routed to a new handler
     connect(apiClient, &GeminiApiClient::functionCallRequested, this, &MainWindow::handleNativeFunctionCall);
-
     connect(apiClient, &GeminiApiClient::usageMetricsReceived, this, &MainWindow::updateTokenDisplay);
+}
+
+void MainWindow::updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens) {
+    QString displayText = QString("Session Context Load: %1 | Last Reply Cost: %2 | Turn Total: %3")
+                          .arg(inputTokens).arg(outputTokens).arg(totalTokens);
+                          
+    tokenDisplayLabel->setText(displayText);
+    
+    if (inputTokens > 950000) {
+        tokenDisplayLabel->setStyleSheet("color: red; font-size: 11px; font-weight: bold;");
+        chatDisplay->append("<span style=\"color: orange;\"><b>[System Warning]:</b> Approaching maximum 1M token context window! The API will reject further requests soon. Please start a new session.</span>");
+    } else if (inputTokens > 800000) {
+        tokenDisplayLabel->setStyleSheet("color: orange; font-size: 11px;");
+    } else {
+        tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
+    }
 }
 
 void MainWindow::handleSendClicked() {
     QString userInput = inputField->text();
     
     if (!userInput.isEmpty()) {
-        chatDisplay->append("<b>you:</b> " + userInput);
-        
-        // save the user's prompt to the local sqlite database
+        chatDisplay->append("<b>You:</b> " + userInput);
         saveInteractionToDb("user", userInput);
-        
-        // send the prompt over the network
         apiClient->sendPrompt(userInput);
-        
         inputField->clear();
     }
 }
 
 void MainWindow::appendStandardOutput(const QString& text, const QString& interactionId) {
-    chatDisplay->append("<b>agent:</b> " + text);
-    
-    // save the model's response and the new api interaction id to the database
+    chatDisplay->append("<b>Agent:</b> " + text);
     saveInteractionToDb("model", text, interactionId);
 }
 
 void MainWindow::appendStandardError(const QString& text) {
-    chatDisplay->append("<span style=\"color: red;\">network error: " + text + "</span>");
+    chatDisplay->append("<span style=\"color: red;\">Network Error: " + text + "</span>");
 }
 
 void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
@@ -190,54 +209,73 @@ void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
     msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     msgBox.setDefaultButton(QMessageBox::Yes); 
 
-    int userChoice = msgBox.exec();
-
-    if (userChoice == QMessageBox::Yes) {
-        chatDisplay->append("<span style=\"color: green;\">[system: action approved by user. executing...]</span>");
-        
+    if (msgBox.exec() == QMessageBox::Yes) {
+        chatDisplay->append(QString("<span style=\"color: green;\">[System: Executed %1 on %2]</span>").arg(command.action, command.target));
         agentController->executeApprovedAction(command);
         
-        // feed success back to the llm over the network
-        QString successMsg = "System: The user approved the action. The file was written successfully.";
+        QString successMsg = "System: Action approved. File written successfully.";
         saveInteractionToDb("system", successMsg);
         apiClient->sendPrompt(successMsg);
-        
     } else {
-        chatDisplay->append("<span style=\"color: red;\">[system: action denied by user.]</span>");
+        chatDisplay->append("<span style=\"color: red;\">[System: Action denied by user.]</span>");
         
-        // feed failure back to the llm
         QString failureMsg = "System: The user DENIED permission for that action. It was not executed.";
         saveInteractionToDb("system", failureMsg);
         apiClient->sendPrompt(failureMsg);
     }
 }
 
+// --- THE FUNCTION ROUTER ---
 void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments) {
-    // map the structured json back to our c++ execution struct
-    AgentCommand command;
-    command.action = functionName;
-    command.target = arguments["target"].toString();
-    command.payload = arguments["payload"].toString();
+    QString target = arguments["target"].toString();
+    QString safePath = resolveAndVerifyPath(target);
 
-    // reuse our existing security intercept modal
-    handleAgentActionRequest(command);
-}
+    // 1. Sandbox Verification Check
+    if (safePath.isEmpty()) {
+        QString errorMsg = "System Error: Path traversal detected. Access to outside directories is denied.";
+        saveInteractionToDb("system", errorMsg);
+        apiClient->sendPrompt(errorMsg);
+        return;
+    }
 
-void MainWindow::updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens) {
-    // Format the display string
-    QString displayText = QString("Session Context Load: %1 | Last Reply Cost: %2 | Turn Total: %3")
-                          .arg(inputTokens).arg(outputTokens).arg(totalTokens);
-                          
-    tokenDisplayLabel->setText(displayText);
-    
-    // Context Window Warning Logic (Assuming 1M token limit for Gemini 1.5/2.5 Flash)
-    if (inputTokens > 950000) {
-        tokenDisplayLabel->setStyleSheet("color: red; font-size: 11px; font-weight: bold;");
-        chatDisplay->append("<span style=\"color: orange;\"><b>[System Warning]:</b> Approaching maximum 1M token context window! The API will reject further requests soon. Please start a new session.</span>");
-    } else if (inputTokens > 800000) {
-        tokenDisplayLabel->setStyleSheet("color: orange; font-size: 11px;");
-    } else {
-        // Reset to default gray if within safe limits
-        tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
+    // 2. SILENT ACTION: Read File
+    if (functionName == "read_file") {
+        QFile file(safePath);
+        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QString content = file.readAll();
+            file.close();
+            
+            QString result = QString("System [read_file %1]:\n%2").arg(target, content);
+            saveInteractionToDb("system", result);
+            apiClient->sendPrompt(result); 
+        } else {
+            apiClient->sendPrompt(QString("System Error: Could not read file %1").arg(target));
+        }
+        return;
+    }
+
+    // 3. SILENT ACTION: List Directory
+    if (functionName == "list_directory") {
+        QDir dir(safePath);
+        if (dir.exists()) {
+            QStringList entries = dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
+            QString result = QString("System [list_directory %1]:\n%2").arg(target, entries.join("\n"));
+            
+            saveInteractionToDb("system", result);
+            apiClient->sendPrompt(result);
+        } else {
+            apiClient->sendPrompt(QString("System Error: Directory %1 does not exist.").arg(target));
+        }
+        return;
+    }
+
+    // 4. DESTRUCTIVE ACTION: Write File (Must go through the UI Modal)
+    if (functionName == "write_file") {
+        AgentCommand command;
+        command.action = functionName;
+        command.target = safePath; // We pass the safe absolute path to the execution controller
+        command.payload = arguments["payload"].toString();
+
+        handleAgentActionRequest(command);
     }
 }
