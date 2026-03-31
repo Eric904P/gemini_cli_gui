@@ -1,79 +1,94 @@
+/**
+ * @file settings_dialog.cpp
+ * @brief Implementation of the global settings dialog.
+ *
+ * This file handles the UI layout, initialization from stored OS settings,
+ * and the secure persistence of API keys and authentication tokens.
+ */
+
 #include "settings_dialog.h"
-#include <QVBoxLayout>
+
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QSettings>
-#include <QFileDialog>
+#include <QLineEdit>
 #include <QMessageBox>
-#include <QDir>
+#include <QPushButton>
+#include <QSettings>
+#include <QVBoxLayout>
 
+/**
+ * @brief Constructs the Settings Dialog UI and loads saved credentials.
+ */
 SettingsDialog::SettingsDialog(QWidget* parent) : QDialog(parent) {
-    setWindowTitle("Agent Configuration");
+    setWindowTitle("Global Settings");
     setMinimumWidth(400);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
 
-    // API Key UI
-    mainLayout->addWidget(new QLabel("Gemini API Key:"));
+    // --- Gemini API Key UI ---
+    mainLayout->addWidget(new QLabel("Google Gemini API Key:"));
     apiKeyInput = new QLineEdit(this);
     apiKeyInput->setEchoMode(QLineEdit::PasswordEchoOnEdit);
+    apiKeyInput->setPlaceholderText("AIzaSy...");
     mainLayout->addWidget(apiKeyInput);
 
-    // GitHub PAT UI
+    // --- GitHub PAT UI ---
     mainLayout->addWidget(new QLabel("GitHub Personal Access Token (Optional):"));
     githubPatInput = new QLineEdit(this);
     githubPatInput->setEchoMode(QLineEdit::PasswordEchoOnEdit);
     githubPatInput->setPlaceholderText("ghp_xxxxxxxxxxxxxxxxxxxx");
     mainLayout->addWidget(githubPatInput);
 
-    // Workspace UI
-    mainLayout->addWidget(new QLabel("Agent Workspace (Sandbox Directory):"));
-    QHBoxLayout* wsLayout = new QHBoxLayout();
-    workspaceInput = new QLineEdit(this);
-    workspaceInput->setReadOnly(true); // Force user to use the browse button
-    browseButton = new QPushButton("Browse...", this);
-    wsLayout->addWidget(workspaceInput);
-    wsLayout->addWidget(browseButton);
-    mainLayout->addLayout(wsLayout);
+    // --- Dialog Buttons ---
+    QHBoxLayout* buttonLayout = new QHBoxLayout();
+    QPushButton* btnSave = new QPushButton("Save", this);
+    QPushButton* btnCancel = new QPushButton("Cancel", this);
 
-    // Save Button
-    saveButton = new QPushButton("Save & Launch", this);
-    mainLayout->addWidget(saveButton);
+    buttonLayout->addStretch();
+    buttonLayout->addWidget(btnSave);
+    buttonLayout->addWidget(btnCancel);
+    
+    mainLayout->addLayout(buttonLayout);
 
-    // Load Existing Settings
+    // --- Initialize from OS Registry/Settings ---
     QSettings settings;
     apiKeyInput->setText(settings.value("api_key", "").toString());
-    workspaceInput->setText(settings.value("workspace_dir", QDir::homePath()).toString());
     githubPatInput->setText(settings.value("github_pat", "").toString());
 
-    // Connections
-    connect(browseButton, &QPushButton::clicked, this, &SettingsDialog::browseWorkspace);
-    connect(saveButton, &QPushButton::clicked, this, &SettingsDialog::saveSettings);
+    // --- Connections ---
+    connect(btnSave, &QPushButton::clicked, this, &SettingsDialog::saveSettings);
+    connect(btnCancel, &QPushButton::clicked, this, &QDialog::reject);
 }
 
-void SettingsDialog::browseWorkspace() {
-    QString dir = QFileDialog::getExistingDirectory(this, "Select Workspace Directory",
-                                                    workspaceInput->text(),
-                                                    QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-    if (!dir.isEmpty()) {
-        workspaceInput->setText(dir);
-    }
-}
-
+/**
+ * @brief Saves the inputs to QSettings and closes the dialog.
+ */
 void SettingsDialog::saveSettings() {
-    if (apiKeyInput->text().trimmed().isEmpty() || workspaceInput->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "Error", "Both API Key and Workspace Directory are required.");
+    QString apiKey = apiKeyInput->text().trimmed();
+    
+    // Validate that the core API key is actually provided
+    if (apiKey.isEmpty()) {
+        QMessageBox::warning(this, "Validation Error", "The Gemini API Key cannot be empty.");
         return;
     }
 
     QSettings settings;
-    settings.setValue("api_key", apiKeyInput->text().trimmed());
-    settings.setValue("workspace_dir", workspaceInput->text().trimmed());
+    settings.setValue("api_key", apiKey);
     settings.setValue("github_pat", githubPatInput->text().trimmed());
-
+    
     accept();
 }
 
-QString SettingsDialog::getApiKey() const { return apiKeyInput->text().trimmed(); }
-QString SettingsDialog::getWorkspaceDirectory() const { return workspaceInput->text().trimmed(); }
-QString SettingsDialog::getGithubPat() const { return githubPatInput->text().trimmed(); }
+/**
+ * @brief Returns the sanitized API Key.
+ */
+QString SettingsDialog::getApiKey() const {
+    return apiKeyInput->text().trimmed();
+}
+
+/**
+ * @brief Returns the sanitized GitHub PAT.
+ */
+QString SettingsDialog::getGithubPat() const {
+    return githubPatInput->text().trimmed();
+}

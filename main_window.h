@@ -1,10 +1,15 @@
+/**
+ * @file main_window.h
+ * @brief Primary GUI definition for the Gemini Native Agent.
+ *
+ * Handles chat rendering, user input, drag-and-drop file attachments,
+ * tool execution routing, and session management.
+ */
+
 #ifndef MAIN_WINDOW_H
 #define MAIN_WINDOW_H
 
 #include <QMainWindow>
-#include <QSqlDatabase>
-#include "agent_manager.h" 
-#include <QLabel>
 #include <QString>
 #include <QStringList>
 #include <QDragEnterEvent>
@@ -12,74 +17,90 @@
 #include <QMimeData>
 #include <QProcess>
 #include <QPixmap>
+#include <QSqlDatabase>
+#include <QJsonObject>
 
-// forward declarations
-class QVBoxLayout;
+#include "agent_manager.h"
+
+// Forward declarations for UI elements to optimize compile times
 class QTextEdit;
 class QLineEdit;
 class QPushButton;
-class QWidget;
-class GeminiApiClient; 
+class QVBoxLayout;
 class QLabel;
+class GeminiApiClient;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
-
-protected:
-    void dragEnterEvent(QDragEnterEvent *event) override;
-    void dropEvent(QDropEvent *event) override;
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow();
 
+protected:
+    // Native Qt event overrides for Drag & Drop functionality
+    void dragEnterEvent(QDragEnterEvent* event) override;
+    void dropEvent(QDropEvent* event) override;
+
 private slots:
+    // --- UI Interaction Slots ---
     void handleSendClicked();
-    void appendStandardOutput(const QString& text, const QString& interactionId);
-    void appendStandardError(const QString& text);
-    void handleAgentActionRequest(const AgentCommand& command);
-    void handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments);
-    void updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens);
-    void openSettings();
-    void switchSession();
     void attachFiles();
     void clearAttachments();
+    void openSettings();
+    void switchSession();
+
+    // --- API & Backend Slots ---
+    void onResponseReceived(const QString& responseText, const QString& interactionId);
+    void onNetworkError(const QString& errorDetails);
+    void onUsageMetricsReceived(int inputTokens, int outputTokens, int totalTokens);
+    
+    // --- Tool Execution Slots ---
+    void handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments);
+    void handleAgentActionRequest(const AgentCommand& command);
 
 private:
+    // --- Initialization Helpers ---
+    void setupUi();
+    void initializeConnections();
+    void initDatabase();
+    
+    // --- State & Memory Helpers ---
+    bool loadHistoryFromDb();
+    void saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId = "");
+    
+    // --- Agent Capabilities Helpers ---
+    QString resolveAndVerifyPath(const QString& relativeTarget);
+    QString buildSystemPrompt();
+    QPixmap captureProcessWindow(qint64 processId);
+    void updateAttachmentUi();
+
+    // --- UI Pointers ---
     QWidget* centralWidget;
     QVBoxLayout* mainLayout;
     QTextEdit* chatDisplay;
     QLineEdit* inputField;
     QPushButton* sendButton;
     QLabel* tokenDisplayLabel;
-    QPushButton* btnSettings;
+    
+    // Toolbar pointers
     QPushButton* btnManageSessions;
-    QPushButton* btnAttach;        
-    QPushButton* btnClearFiles;    
-    QLabel* lblAttachments;     
-    QProcess* agentProcess;   
+    QPushButton* btnSettings;
+    
+    // Attachment pointers
+    QPushButton* btnAttach;
+    QPushButton* btnClearFiles;
+    QLabel* lblAttachments;
 
-    GeminiApiClient* apiClient; 
+    // --- Backend Managers & State ---
+    GeminiApiClient* apiClient;
     AgentActionManager* agentController;
-
     QSqlDatabase db;
+    QProcess* agentProcess;
+
     QString currentSessionId;
     QString currentWorkspacePath;
     QStringList pendingAttachments;
-
-    void setupUi();
-    void initializeConnections();
-    
-    // local storage setup and execution
-    void initDatabase();
-    bool loadHistoryFromDb();
-    void saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId = "");
-    QString resolveAndVerifyPath(const QString& relativeTarget);
-
-    void updateAttachmentUi();
-    QString buildSystemPrompt();
-
-    QPixmap captureProcessWindow(qint64 processId);
 };
 
 #endif // MAIN_WINDOW_H

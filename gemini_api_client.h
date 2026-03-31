@@ -1,3 +1,12 @@
+/**
+ * @file gemini_api_client.h
+ * @brief Network client for communicating with the Google Gemini API.
+ *
+ * This class manages the stateful interaction with the Gemini v1beta API,
+ * including JSON payload construction, multi-modal file attachments, 
+ * tool definitions, and parsing Google's asynchronous responses.
+ */
+
 #ifndef GEMINI_API_CLIENT_H
 #define GEMINI_API_CLIENT_H
 
@@ -7,6 +16,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 class GeminiApiClient : public QObject {
     Q_OBJECT
@@ -15,45 +25,47 @@ public:
     explicit GeminiApiClient(QObject* parent = nullptr);
     ~GeminiApiClient();
 
-    // configuration
+    // --- Configuration ---
     void setApiKey(const QString& key);
     
-    // primary execution method
+    // --- Core Execution ---
+    /**
+     * @brief Sends a prompt and optional file attachments to the Gemini API.
+     */
     void sendPrompt(const QString& userInput, const QStringList& attachments = QStringList());
 
-    // resets the interaction chain for a new chat
+    // --- Session Management ---
+    /**
+     * @brief Clears the current interaction ID to start a fresh thread.
+     */
     void resetSession();
 
+    /**
+     * @brief Restores the interaction ID from SQLite to resume a previous chat.
+     */
     void restoreSession(const QString& interactionId);
 
 signals:
-    // emitted when a successful json payload is parsed, passing the new interaction id
+    // --- API Response Signals ---
     void responseReceived(const QString& responseText, const QString& interactionId);
-    
-    // emitted if the https request fails
     void networkError(const QString& errorDetails);
-
-    // emitted when the response contains a function call request
     void functionCallRequested(const QString& functionName, const QJsonObject& arguments);
-
     void usageMetricsReceived(int inputTokens, int outputTokens, int totalTokens);
 
 private slots:
-    // internal handler for when the google server responds
+    // --- Internal Network Handlers ---
     void onNetworkReply(QNetworkReply* reply);
 
 private:
     QNetworkAccessManager* networkManager;
     QString apiKey;
-    QString currentApiInteractionId; // tracks the stateful api thread
     
-    // helper to format the outgoing http request
+    /// Tracks the stateful API thread to maintain chat history on Google's servers
+    QString currentApiInteractionId; 
+    
+    // --- Payload Construction Helpers ---
     QNetworkRequest createRequest() const;
-    
-    // helper to assemble the json body
     QByteArray buildJsonPayload(const QString& newPrompt, const QStringList& attachments);
-
-    // helper to define the available tools in the system prompt
     QJsonArray defineAvailableTools() const;
 };
 

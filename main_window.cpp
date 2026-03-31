@@ -1,15 +1,26 @@
+/**
+ * @file main_window.cpp
+ * @brief Implementation of the primary GUI and agent orchestration logic.
+ *
+ * This file contains the implementation for UI rendering, SQLite chat history 
+ * management, multi-modal drag-and-drop, and the execution engine for all 
+ * native capabilities (shell commands, FTP, web requests, and screenshots).
+ */
+
 #include "main_window.h"
-#include "gemini_api_client.h" 
+#include "gemini_api_client.h"
 #include "settings_dialog.h"
 #include "session_dialog.h"
 
-#include <QSettings>
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QTextEdit>
 #include <QLineEdit>
 #include <QPushButton>
-#include <QWidget>
+#include <QLabel>
 #include <QMessageBox>
+#include <QFileDialog>
+#include <QSettings>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDateTime>
@@ -17,64 +28,62 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QLabel>
-#include <QStringList>
-#include <QProcess>
+#include <QEventLoop>
+#include <QThread>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QEventLoop>
 #include <QUrl>
-#include <QFileDialog>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QWindow>
 
-// --- THE SANDBOX HELPER ---
-// This safely resolves relative paths to absolute paths, ensuring the LLM 
-// cannot escape the designated workspace directory (e.g., trying to read ../../System32)
-// The new, session-aware sandbox helper
-QString MainWindow::resolveAndVerifyPath(const QString& relativeTarget) {
-    if (currentWorkspacePath.isEmpty()) return "";
+// Include Windows API for precise window cropping during screenshots
+#ifdef Q_OS_WIN
+#include <windows.h>
 
-    QDir workspaceDir(currentWorkspacePath);
-    QString absolutePath = QDir::cleanPath(workspaceDir.absoluteFilePath(relativeTarget));
+struct WindowSearchData {
+    DWORD pid;
+    HWND hwnd;
+};
 
-    // Security: Ensure the resolved path hasn't escaped the active session's workspace
-    if (!absolutePath.startsWith(workspaceDir.absolutePath())) {
-        return ""; 
+// Callback to locate the specific OS window owned by the agent's active process
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
+    WindowSearchData* data = reinterpret_cast<WindowSearchData*>(lParam);
+    DWORD processId = 0;
+    GetWindowThreadProcessId(hwnd, &processId);
+    
+    // Stop searching if we find a visible window belonging to the exact PID
+    if (processId == data->pid && IsWindowVisible(hwnd)) {
+        data->hwnd = hwnd;
+        return FALSE; 
     }
-    return absolutePath;
+    return TRUE;
 }
+#endif
 
-QString MainWindow::buildSystemPrompt() {
-    return QString(
-        "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
-        "CRITICAL: You are sandboxed to the working directory: %1\n"
-        "All file paths you provide MUST be relative to this directory. Do not attempt to access files outside this workspace.\n\n"
-        "GIT INTEGRATION: If you need to execute 'git push' or 'git pull', a GitHub Personal Access Token is available in the environment variable $GITHUB_PAT. "
-        "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
-        "WEB DEPLOYMENT: You have a native 'upload_ftp' tool. You can use this to deploy HTML/CSS/JS files directly to remote servers.\n\n"
-        "WEB BROWSING: You have a 'fetch_webpage' tool. Use it to verify your web deployments by reading the live DOM, or to fetch external documentation.\n\n"
-        "CODE EXECUTION & TESTING: You can test the code you write! Use `execute_shell_command` to compile and run C++/Java, or execute Python/Node scripts. You will receive the terminal STDOUT/STDERR exactly as an end-user would see it.\n\n"
-        "Acknowledge these instructions, confirm your working directory, and introduce yourself."
-    ).arg(currentWorkspacePath);
-}
-
+/**
+ * @brief Constructs the Main Window and initializes the application state.
+ */
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUi();
     initDatabase();
     
+    // Track the running state of background code executed by the agent
+    agentProcess = new QProcess(this);
+    
     apiClient = new GeminiApiClient(this);
     agentController = new AgentActionManager(this);
-    agentController->addWhitelistedAction("write_file");
-    agentProcess = new QProcess(this); 
+    
+    // White-list the non-destructive actions the agent can take without a prompt
+    agentController->addWhitelistedAction("write_file"); 
     
     initializeConnections();
 
-    this->show();
+    // Draw the UI immediately so modal dialogs float correctly over the application
+    this->show(); 
 
-    // 1. GLOBAL SETTINGS CHECK (API Key Only)
+    // --- GLOBAL SETTINGS CHECK ---
     QSettings settings;
     QString storedKey = settings.value("api_key", "").toString();
 
@@ -91,7 +100,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
     apiClient->setApiKey(storedKey);
 
-    // 2. SESSION MANAGER LAUNCH
+    // --- SESSION MANAGER LAUNCH ---
     SessionDialog sessionDlg(this);
     if (sessionDlg.exec() != QDialog::Accepted) {
         chatDisplay->append("<span style=\"color: red;\">Error: No session selected. Please restart.</span>");
@@ -100,69 +109,206 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         return;
     }
 
-    // 3. APPLY THE SELECTED SESSION
+    // Apply the user's selected session configuration
     SessionData activeSession = sessionDlg.getSelectedSession();
     currentSessionId = activeSession.id;
     currentWorkspacePath = activeSession.workspace;
     
-    // Update window title to show the active project
     setWindowTitle(QString("Gemini Agent - %1").arg(activeSession.name));
 
-    // 4. LOAD HISTORY & INITIALIZE
-    // Load the specific chat history for THIS session
+    // Load history; returns false if this is a brand new session
     bool isExistingSession = loadHistoryFromDb(); 
 
-    // ONLY send the system instructions if this is a brand new project!
-    // If it's an existing project, Google already remembers the workspace.
+    // Only inject the heavy system prompt if Google doesn't already have the history loaded
     if (!isExistingSession) {
         QString systemInstructions = buildSystemPrompt();
-            
         saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
         apiClient->sendPrompt(systemInstructions);
     } else {
         chatDisplay->append("<span style=\"color: green;\">[System: Session Restored Successfully]</span>");
     }
+}
 
-    setAcceptDrops(true); // Enable Drag and Drop
-} // End of constructor
-
+/**
+ * @brief Destructor ensures no orphan processes are left running in the background.
+ */
 MainWindow::~MainWindow() {
-    if (db.isOpen()) {
-        db.close();
+    if (agentProcess && agentProcess->state() == QProcess::Running) {
+        agentProcess->terminate();
+        agentProcess->waitForFinished(2000);
     }
 }
 
+/**
+ * @brief Dynamically constructs the comprehensive system instructions for the LLM.
+ */
+QString MainWindow::buildSystemPrompt() {
+    return QString(
+        "System Configuration: You are an autonomous local coding agent running inside a Qt C++ wrapper.\n"
+        "CRITICAL: You are sandboxed to the working directory: %1\n"
+        "All file paths you provide MUST be relative to this directory. Do not attempt to access files outside this workspace.\n\n"
+        "GIT INTEGRATION: If you need to execute 'git push' or 'git pull', a GitHub Personal Access Token is available in the environment variable $GITHUB_PAT. "
+        "To authenticate silently, format your remote URLs like this: https://$GITHUB_PAT@github.com/Username/Repo.git\n\n"
+        "WEB DEPLOYMENT: You have a native 'upload_ftp' tool. You can use this to deploy HTML/CSS/JS files directly to remote servers.\n\n"
+        "WEB BROWSING: You have a 'fetch_webpage' tool. Use it to verify your web deployments by reading the live DOM, or to fetch external documentation.\n\n"
+        "CODE EXECUTION & TESTING: You can test the code you write! Use `execute_shell_command` to compile and run C++/Java, or execute Python/Node scripts. You will receive the terminal STDOUT/STDERR exactly as an end-user would see it.\n\n"
+        "Acknowledge these instructions, confirm your working directory, and introduce yourself."
+    ).arg(currentWorkspacePath);
+}
+
+/**
+ * @brief Security helper to ensure file operations never escape the project workspace.
+ */
+QString MainWindow::resolveAndVerifyPath(const QString& relativeTarget) {
+    if (currentWorkspacePath.isEmpty()) return "";
+
+    QDir workspaceDir(currentWorkspacePath);
+    QString absolutePath = QDir::cleanPath(workspaceDir.absoluteFilePath(relativeTarget));
+
+    // Block directory traversal attacks (e.g., ../../etc/passwd)
+    if (!absolutePath.startsWith(workspaceDir.absolutePath())) {
+        return ""; 
+    }
+    return absolutePath;
+}
+
+/**
+ * @brief Constructs the visual layout of the application.
+ */
+void MainWindow::setupUi() {
+    centralWidget = new QWidget(this);
+    mainLayout = new QVBoxLayout(centralWidget);
+
+    // --- Top Toolbar ---
+    QHBoxLayout* topBarLayout = new QHBoxLayout();
+    btnManageSessions = new QPushButton("📁 Switch Session", this);
+    btnSettings = new QPushButton("⚙️ Settings", this);
+    
+    topBarLayout->addWidget(btnManageSessions);
+    topBarLayout->addStretch(); 
+    topBarLayout->addWidget(btnSettings);
+    
+    mainLayout->addLayout(topBarLayout); 
+
+    // --- Chat Display ---
+    chatDisplay = new QTextEdit(this);
+    chatDisplay->setReadOnly(true);
+    
+    tokenDisplayLabel = new QLabel("Tokens: 0 In | 0 Out", this);
+    tokenDisplayLabel->setAlignment(Qt::AlignRight);
+    tokenDisplayLabel->setStyleSheet("color: gray; font-size: 10px;");
+
+    // --- Multi-modal Attachment UI ---
+    lblAttachments = new QLabel("", this);
+    lblAttachments->setStyleSheet("color: #0078D7; font-size: 11px; font-weight: bold;");
+    lblAttachments->hide(); 
+
+    btnClearFiles = new QPushButton("❌", this);
+    btnClearFiles->setFixedSize(24, 24);
+    btnClearFiles->setToolTip("Clear Attachments");
+    btnClearFiles->hide();
+
+    QHBoxLayout* attachmentLayout = new QHBoxLayout();
+    attachmentLayout->addWidget(lblAttachments);
+    attachmentLayout->addWidget(btnClearFiles);
+    attachmentLayout->addStretch();
+
+    // --- Input Area ---
+    QHBoxLayout* inputLayout = new QHBoxLayout();
+    btnAttach = new QPushButton("📎", this);
+    btnAttach->setFixedSize(30, 30);
+    btnAttach->setToolTip("Attach Files");
+
+    inputField = new QLineEdit(this);
+    inputField->setPlaceholderText("Enter command, or drag and drop files here...");
+
+    sendButton = new QPushButton("Send", this);
+
+    inputLayout->addWidget(btnAttach);
+    inputLayout->addWidget(inputField);
+    inputLayout->addWidget(sendButton);
+
+    mainLayout->addWidget(chatDisplay);
+    mainLayout->addWidget(tokenDisplayLabel);
+    mainLayout->addLayout(attachmentLayout); 
+    mainLayout->addLayout(inputLayout);      
+
+    setCentralWidget(centralWidget);
+    setWindowTitle("Gemini Native Agent");
+    resize(800, 600);
+    
+    // Enable system drag-and-drop support
+    setAcceptDrops(true); 
+}
+
+/**
+ * @brief Wires UI actions and API signals to their respective logic handlers.
+ */
+void MainWindow::initializeConnections() {
+    connect(sendButton, &QPushButton::clicked, this, &MainWindow::handleSendClicked);
+    connect(inputField, &QLineEdit::returnPressed, this, &MainWindow::handleSendClicked);
+    connect(btnAttach, &QPushButton::clicked, this, &MainWindow::attachFiles);
+    connect(btnClearFiles, &QPushButton::clicked, this, &MainWindow::clearAttachments);
+    connect(btnSettings, &QPushButton::clicked, this, &MainWindow::openSettings);
+    connect(btnManageSessions, &QPushButton::clicked, this, &MainWindow::switchSession);
+
+    connect(apiClient, &GeminiApiClient::responseReceived, this, &MainWindow::onResponseReceived);
+    connect(apiClient, &GeminiApiClient::networkError, this, &MainWindow::onNetworkError);
+    connect(apiClient, &GeminiApiClient::usageMetricsReceived, this, &MainWindow::onUsageMetricsReceived);
+    connect(apiClient, &GeminiApiClient::functionCallRequested, this, &MainWindow::handleNativeFunctionCall);
+}
+
+// ============================================================================
+// DATABASE & SESSION MANAGEMENT
+// ============================================================================
+
+/**
+ * @brief Initializes the SQLite database and schemas.
+ */
 void MainWindow::initDatabase() {
     db = QSqlDatabase::addDatabase("QSQLITE");
-    db.setDatabaseName("interactions.db");
+    db.setDatabaseName("agent_history.db");
 
     if (!db.open()) {
-        QMessageBox::critical(this, "Database Error", "Failed to open local SQLite database.");
+        QMessageBox::critical(this, "Database Error", "Could not open local database.");
         return;
     }
 
     QSqlQuery query;
     query.exec("CREATE TABLE IF NOT EXISTS interactions ("
-               "local_id TEXT PRIMARY KEY, "
+               "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                "session_id TEXT, "
-               "api_interaction_id TEXT, "
+               "timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, "
                "role TEXT, "
                "content TEXT, "
-               "timestamp INTEGER)");
+               "api_interaction_id TEXT)");
 }
 
+/**
+ * @brief Saves a single chat interaction to local storage.
+ */
+void MainWindow::saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId) {
+    if (!db.isOpen()) return;
+
+    QSqlQuery query;
+    query.prepare("INSERT INTO interactions (session_id, role, content, api_interaction_id) VALUES (:sid, :role, :content, :api_id)");
+    query.bindValue(":sid", currentSessionId);
+    query.bindValue(":role", role);
+    query.bindValue(":content", content);
+    query.bindValue(":api_id", apiInteractionId);
+    query.exec();
+}
+
+/**
+ * @brief Restores UI state and API memory thread for the active session.
+ */
 bool MainWindow::loadHistoryFromDb() {
     if (!db.isOpen()) return false;
 
-    // CRITICAL FIX: Only fetch interactions for the currently active session!
     QSqlQuery query;
     query.prepare("SELECT role, content, api_interaction_id FROM interactions WHERE session_id = :session_id ORDER BY timestamp ASC");
     query.bindValue(":session_id", currentSessionId);
-    
-    if (!query.exec()) {
-        appendStandardError("Failed to load history: " + query.lastError().text());
-        return false;
-    }
+    query.exec();
 
     QString lastInteractionId;
     bool hasMessages = false;
@@ -186,518 +332,36 @@ bool MainWindow::loadHistoryFromDb() {
         }
     }
 
+    // Pass the state token back to the API client so the LLM remembers the context
     if (!lastInteractionId.isEmpty()) {
         apiClient->restoreSession(lastInteractionId);
     }
     
-    return hasMessages; // Tell the constructor if this was an existing chat
+    return hasMessages; 
 }
 
-void MainWindow::saveInteractionToDb(const QString& role, const QString& content, const QString& apiInteractionId) {
-    if (!db.isOpen()) return;
-
-    QSqlQuery query;
-    query.prepare("INSERT INTO interactions (local_id, session_id, api_interaction_id, role, content, timestamp) "
-                  "VALUES (:local_id, :session_id, :api_interaction_id, :role, :content, :timestamp)");
-    
-    query.bindValue(":local_id", QUuid::createUuid().toString(QUuid::WithoutBraces));
-    query.bindValue(":session_id", currentSessionId);
-    query.bindValue(":api_interaction_id", apiInteractionId);
-    query.bindValue(":role", role);
-    query.bindValue(":content", content);
-    query.bindValue(":timestamp", QDateTime::currentSecsSinceEpoch());
-
-    if (!query.exec()) {
-        appendStandardError("Failed to save interaction to database: " + query.lastError().text());
-    }
-}
-
-void MainWindow::setupUi() {
-    centralWidget = new QWidget(this);
-    mainLayout = new QVBoxLayout(centralWidget);
-
-    QHBoxLayout* topBarLayout = new QHBoxLayout();
-    btnManageSessions = new QPushButton("📁 Switch Session", this);
-    btnSettings = new QPushButton("⚙️ Settings", this);
-    
-    topBarLayout->addWidget(btnManageSessions);
-    topBarLayout->addStretch(); // Pushes settings to the far right
-    topBarLayout->addWidget(btnSettings);
-    
-    mainLayout->addLayout(topBarLayout);
-
-    chatDisplay = new QTextEdit(this);
-    chatDisplay->setReadOnly(true);
-
-    tokenDisplayLabel = new QLabel("Context Load: 0 tokens | Last Output: 0 tokens", this);
-    tokenDisplayLabel->setAlignment(Qt::AlignRight);
-    tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
-
-    // --- NEW: Bottom Input Area ---
-    lblAttachments = new QLabel("", this);
-    lblAttachments->setStyleSheet("color: #0078D7; font-size: 11px; font-weight: bold;");
-    lblAttachments->hide(); // Hidden by default until a file is attached
-
-    btnClearFiles = new QPushButton("❌", this);
-    btnClearFiles->setFixedSize(24, 24);
-    btnClearFiles->setToolTip("Clear Attachments");
-    btnClearFiles->hide();
-
-    QHBoxLayout* attachmentLayout = new QHBoxLayout();
-    attachmentLayout->addWidget(lblAttachments);
-    attachmentLayout->addWidget(btnClearFiles);
-    attachmentLayout->addStretch();
-
-    QHBoxLayout* inputLayout = new QHBoxLayout();
-    btnAttach = new QPushButton("📎", this);
-    btnAttach->setFixedSize(30, 30);
-    btnAttach->setToolTip("Attach Files");
-
-    inputField = new QLineEdit(this);
-    inputField->setPlaceholderText("Enter command, or drag and drop files here...");
-
-    sendButton = new QPushButton("Send", this);
-
-    inputLayout->addWidget(btnAttach);
-    inputLayout->addWidget(inputField);
-    inputLayout->addWidget(sendButton);
-
-    // Assemble the main layout
-    mainLayout->addWidget(chatDisplay);
-    mainLayout->addWidget(tokenDisplayLabel);
-    mainLayout->addLayout(attachmentLayout); // Shows pending files
-    mainLayout->addLayout(inputLayout);      // The input bar
-
-    setCentralWidget(centralWidget);
-    setWindowTitle("Gemini Native Agent");
-    resize(800, 600);
-}
-
-void MainWindow::initializeConnections() {
-    connect(sendButton, &QPushButton::clicked, this, &MainWindow::handleSendClicked);
-    connect(inputField, &QLineEdit::returnPressed, sendButton, &QPushButton::click);
-    connect(btnSettings, &QPushButton::clicked, this, &MainWindow::openSettings);
-    connect(btnManageSessions, &QPushButton::clicked, this, &MainWindow::switchSession);
-    connect(btnAttach, &QPushButton::clicked, this, &MainWindow::attachFiles);
-    connect(btnClearFiles, &QPushButton::clicked, this, &MainWindow::clearAttachments);
-
-    connect(apiClient, &GeminiApiClient::responseReceived, this, &MainWindow::appendStandardOutput);
-    connect(apiClient, &GeminiApiClient::networkError, this, &MainWindow::appendStandardError);
-    connect(apiClient, &GeminiApiClient::functionCallRequested, this, &MainWindow::handleNativeFunctionCall);
-    connect(apiClient, &GeminiApiClient::usageMetricsReceived, this, &MainWindow::updateTokenDisplay);
-}
-
-void MainWindow::updateTokenDisplay(int inputTokens, int outputTokens, int totalTokens) {
-    QString displayText = QString("Session Context Load: %1 | Last Reply Cost: %2 | Turn Total: %3")
-                          .arg(inputTokens).arg(outputTokens).arg(totalTokens);
-                          
-    tokenDisplayLabel->setText(displayText);
-    
-    if (inputTokens > 950000) {
-        tokenDisplayLabel->setStyleSheet("color: red; font-size: 11px; font-weight: bold;");
-        chatDisplay->append("<span style=\"color: orange;\"><b>[System Warning]:</b> Approaching maximum 1M token context window! The API will reject further requests soon. Please start a new session.</span>");
-    } else if (inputTokens > 800000) {
-        tokenDisplayLabel->setStyleSheet("color: orange; font-size: 11px;");
-    } else {
-        tokenDisplayLabel->setStyleSheet("color: #888888; font-size: 11px;");
-    }
-}
-
-void MainWindow::handleSendClicked() {
-    QString userInput = inputField->text();
-    
-    // Allow sending if there is text OR if there are just files attached
-    if (!userInput.isEmpty() || !pendingAttachments.isEmpty()) {
-        
-        QString displayMsg = userInput;
-        if (!pendingAttachments.isEmpty()) {
-            displayMsg += QString(" <i>[Attached %1 file(s)]</i>").arg(pendingAttachments.size());
-        }
-
-        chatDisplay->append("<b>You:</b> " + displayMsg);
-        saveInteractionToDb("user", displayMsg);
-        
-        // Pass the attachments directly to the API client!
-        apiClient->sendPrompt(userInput, pendingAttachments); 
-        
-        inputField->clear();
-        clearAttachments(); // Wipe the pending list after sending
-    }
-}
-
-void MainWindow::appendStandardOutput(const QString& text, const QString& interactionId) {
-    chatDisplay->append("<b>Agent:</b> " + text);
-    saveInteractionToDb("model", text, interactionId);
-}
-
-void MainWindow::appendStandardError(const QString& text) {
-    chatDisplay->append("<span style=\"color: red;\">Network Error: " + text + "</span>");
-}
-
-void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
-    QString warningText = QString("The agent is requesting permission to execute an action.\n\n"
-                                  "Action: %1\n"
-                                  "Target: %2\n\n"
-                                  "Press [Enter] to Allow, or [Esc] to Deny.")
-                                  .arg(command.action, command.target);
-
-    QMessageBox msgBox(this);
-    msgBox.setWindowTitle("Security Intercept");
-    msgBox.setText(warningText);
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-    msgBox.setDefaultButton(QMessageBox::Yes); 
-
-    if (msgBox.exec() == QMessageBox::Yes) {
-        chatDisplay->append(QString("<span style=\"color: green;\">[System: Executed %1 on %2]</span>").arg(command.action, command.target));
-        
-        QString systemFeedbackMsg;
-
-        // Route 1: Standard File Writing
-        if (command.action == "write_file") {
-            agentController->executeApprovedAction(command);
-            systemFeedbackMsg = "System: Action approved. File written successfully.";
-        } 
-        // Route 2: Shell/Terminal Execution
-        else if (command.action == "execute_shell_command") {
-            // 1. Clean up any previously running GUI processes before starting a new one
-            if (agentProcess->state() == QProcess::Running) {
-                agentProcess->terminate();
-                agentProcess->waitForFinished(2000); 
-            }
-
-            agentProcess->setWorkingDirectory(currentWorkspacePath); 
-
-            // 2. Inject Environment Variables (GitHub PAT)
-            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-            QSettings settings;
-            QString githubPat = settings.value("github_pat", "").toString();
-            
-            if (!githubPat.isEmpty()) {
-                env.insert("GITHUB_PAT", githubPat);
-                env.insert("GITHUB_TOKEN", githubPat); 
-            }
-            agentProcess->setProcessEnvironment(env);
-
-            // 3. Cross-platform shell wrapper
-            #ifdef Q_OS_WIN
-                agentProcess->start("cmd.exe", QStringList() << "/c" << command.target);
-            #else
-                agentProcess->start("/bin/sh", QStringList() << "-c" << command.target);
-            #endif
-
-            // 4. THE HYBRID WAIT LOGIC
-            // Wait up to 5 seconds for the command to finish naturally (e.g., git, cmake, npm)
-            bool finished = agentProcess->waitForFinished(5000); 
-
-            if (finished) {
-                // It was a quick CLI command. Capture the terminal text!
-                QByteArray stdOut = agentProcess->readAllStandardOutput();
-                QByteArray stdErr = agentProcess->readAllStandardError();
-
-                systemFeedbackMsg = QString("System [execute_shell_command]:\nExit Code: %1\nSTDOUT:\n%2\nSTDERR:\n%3")
-                                     .arg(agentProcess->exitCode())
-                                     .arg(QString::fromLocal8Bit(stdOut).trimmed())
-                                     .arg(QString::fromLocal8Bit(stdErr).trimmed());
-            } else {
-                // It is still running! It's likely a GUI app or a persistent local server.
-                // Leave it running in the background and tell the agent the PID.
-                systemFeedbackMsg = QString("System [execute_shell_command]: Process started and is running in the background. Process ID: %1\n"
-                                            "(Note: If this is a GUI application, you may now use the take_screenshot tool).")
-                                     .arg(agentProcess->processId());
-            }
-        }
-        // Route 3: Native FTP Upload
-        else if (command.action == "upload_ftp") {
-            QJsonObject ftpArgs = QJsonDocument::fromJson(command.payload.toUtf8()).object();
-            QString remoteUrl = ftpArgs["remote_url"].toString();
-            
-            QUrl url(remoteUrl);
-            url.setUserName(ftpArgs["username"].toString());
-            url.setPassword(ftpArgs["password"].toString());
-
-            QFile* fileToUpload = new QFile(command.target);
-            if (!fileToUpload->open(QIODevice::ReadOnly)) {
-                systemFeedbackMsg = "System Error: Could not open local file for upload.";
-                delete fileToUpload;
-            } else {
-                QNetworkAccessManager ftpManager;
-                QNetworkRequest request(url);
-                
-                // Execute the native PUT request
-                QNetworkReply* reply = ftpManager.put(request, fileToUpload);
-                
-                // Freeze local execution until the upload finishes
-                QEventLoop loop;
-                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-                loop.exec();
-
-                if (reply->error() == QNetworkReply::NoError) {
-                    systemFeedbackMsg = "System [upload_ftp]: Upload successful to " + remoteUrl;
-                } else {
-                    systemFeedbackMsg = "System Error [upload_ftp]: " + reply->errorString();
-                }
-                
-                reply->deleteLater();
-                fileToUpload->setParent(reply); // Auto-deletes the file object when reply is destroyed
-            }
-        }
-        // Route 4: Process-Isolated Screenshot
-        else if (command.action == "take_screenshot") {
-            qint64 pid = agentProcess->processId();
-            
-            if (pid == 0 || agentProcess->state() != QProcess::Running) {
-                systemFeedbackMsg = "System Error: No active GUI application is currently running to screenshot.";
-            } else {
-                QPixmap croppedShot = captureProcessWindow(pid);
-                
-                // VISUAL SECURITY INTERCEPT: Show the user the cropped image!
-                QMessageBox imgBox(this);
-                imgBox.setWindowTitle("Security Intercept: Approve Image");
-                imgBox.setText("The agent wants to send this image to the API. Do you approve?");
-                imgBox.setIconPixmap(croppedShot.scaledToWidth(400, Qt::SmoothTransformation));
-                imgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
-                
-                if (imgBox.exec() == QMessageBox::Yes) {
-                    // Save the image to the workspace so the agent can reference it
-                    QString savePath = QDir(currentWorkspacePath).absoluteFilePath("agent_vision_capture.png");
-                    croppedShot.save(savePath, "PNG");
-                    
-                    systemFeedbackMsg = QString("System [take_screenshot]: Success. Image saved locally as '%1'. Please read the file to analyze the UI.").arg("agent_vision_capture.png");
-                    
-                    // Note: To send this directly in the API stream without the agent re-reading it, 
-                    // you would base64 encode it here and inject it into the QJsonObject payload.
-                } else {
-                    systemFeedbackMsg = "System Error: The human user DENIED the screenshot request due to privacy concerns.";
-                }
-            }
-        }
-
-        // Save and send the resulting terminal output back to the LLM
-        saveInteractionToDb("system", systemFeedbackMsg);
-        apiClient->sendPrompt(systemFeedbackMsg);
-    } else {
-        chatDisplay->append("<span style=\"color: red;\">[System: Action denied by user.]</span>");
-        
-        QString failureMsg = "System: The user DENIED permission for that action. It was not executed.";
-        saveInteractionToDb("system", failureMsg);
-        apiClient->sendPrompt(failureMsg);
-    }
-}
-
-#ifdef Q_OS_WIN
-#include <windows.h>
-
-struct WindowSearchData {
-    DWORD pid;
-    HWND hwnd;
-};
-
-// Callback to find the window owned by our specific Process ID
-BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
-    WindowSearchData* data = reinterpret_cast<WindowSearchData*>(lParam);
-    DWORD processId = 0;
-    GetWindowThreadProcessId(hwnd, &processId);
-    
-    // Check if the window belongs to the PID and is actually visible
-    if (processId == data->pid && IsWindowVisible(hwnd)) {
-        data->hwnd = hwnd;
-        return FALSE; // Found it, stop searching
-    }
-    return TRUE;
-}
-#endif
-
-QPixmap MainWindow::captureProcessWindow(qint64 processId) {
-    QScreen *screen = QGuiApplication::primaryScreen();
-    if (!screen) return QPixmap();
-
-    // Grab the entire desktop first
-    QPixmap fullScreen = screen->grabWindow(0);
-
-#ifdef Q_OS_WIN
-    WindowSearchData searchData = { static_cast<DWORD>(processId), nullptr };
-    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&searchData));
-
-    if (searchData.hwnd) {
-        RECT rect;
-        if (GetWindowRect(searchData.hwnd, &rect)) {
-            // CROP the screenshot strictly to the application's boundary!
-            int x = rect.left;
-            int y = rect.top;
-            int width = rect.right - rect.left;
-            int height = rect.bottom - rect.top;
-            
-            return fullScreen.copy(x, y, width, height);
-        }
-    }
-#endif
-
-    // Fallback if the OS isn't Windows or the window wasn't found
-    return fullScreen; 
-}
-
-// --- THE FUNCTION ROUTER ---
-void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments) {
-    QString target = arguments["target"].toString();
-    QString safePath = resolveAndVerifyPath(target);
-
-    // 1. Sandbox Verification Check
-    if (safePath.isEmpty()) {
-        QString errorMsg = "System Error: Path traversal detected. Access to outside directories is denied.";
-        saveInteractionToDb("system", errorMsg);
-        apiClient->sendPrompt(errorMsg);
-        return;
-    }
-
-    // 2. SILENT ACTION: Read File
-    if (functionName == "read_file") {
-        QFile file(safePath);
-        if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QString content = file.readAll();
-            file.close();
-            
-            QString result = QString("System [read_file %1]:\n%2").arg(target, content);
-            saveInteractionToDb("system", result);
-            apiClient->sendPrompt(result); 
-        } else {
-            apiClient->sendPrompt(QString("System Error: Could not read file %1").arg(target));
-        }
-        return;
-    }
-
-    // 3. SILENT ACTION: List Directory
-    if (functionName == "list_directory") {
-        QDir dir(safePath);
-        if (dir.exists()) {
-            QStringList entries = dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot);
-            QString result = QString("System [list_directory %1]:\n%2").arg(target, entries.join("\n"));
-            
-            saveInteractionToDb("system", result);
-            apiClient->sendPrompt(result);
-        } else {
-            apiClient->sendPrompt(QString("System Error: Directory %1 does not exist.").arg(target));
-        }
-        return;
-    }
-
-    // 4. DESTRUCTIVE ACTION: Write File (Must go through the UI Modal)
-    if (functionName == "write_file") {
-        AgentCommand command;
-        command.action = functionName;
-        command.target = safePath; // We pass the safe absolute path to the execution controller
-        command.payload = arguments["payload"].toString();
-
-        handleAgentActionRequest(command);
-    }
-
-    // 5. DESTRUCTIVE ACTION: Execute Shell Command (Must go through the UI Modal)
-    if (functionName == "execute_shell_command") {
-        AgentCommand command;
-        command.action = functionName;
-        // We store the shell command in the 'target' variable so the UI modal can display it
-        command.target = arguments["command"].toString(); 
-        command.payload = "";
-
-        handleAgentActionRequest(command);
-        return;
-    }
-
-    // 6. DESTRUCTIVE ACTION: FTP Upload (Must go through the UI Modal)
-    if (functionName == "upload_ftp") {
-        QString localPath = resolveAndVerifyPath(arguments["local_path"].toString());
-        if (localPath.isEmpty()) {
-            apiClient->sendPrompt("System Error: Local file path is outside the workspace.");
-            return;
-        }
-
-        AgentCommand command;
-        command.action = functionName;
-        command.target = localPath; 
-        
-        // Pack the FTP credentials into the payload to pass to the execution engine
-        QJsonObject ftpArgs;
-        ftpArgs["remote_url"] = arguments["remote_url"].toString();
-        ftpArgs["username"] = arguments["username"].toString();
-        ftpArgs["password"] = arguments["password"].toString();
-        command.payload = QJsonDocument(ftpArgs).toJson(QJsonDocument::Compact);
-
-        handleAgentActionRequest(command);
-        return;
-    }
-
-    // 7. SILENT ACTION: Fetch Webpage
-    if (functionName == "fetch_webpage") {
-        QString urlStr = arguments["url"].toString();
-        
-        QNetworkAccessManager manager;
-        QNetworkRequest request((QUrl(urlStr)));
-        QNetworkReply* reply = manager.get(request);
-        
-        // Freeze local execution thread until the HTTP request finishes
-        QEventLoop loop;
-        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        loop.exec();
-        
-        QString result;
-        if (reply->error() == QNetworkReply::NoError) {
-            result = QString("System [fetch_webpage %1]:\n%2").arg(urlStr, QString::fromUtf8(reply->readAll()));
-        } else {
-            result = QString("System Error [fetch_webpage %1]: %2").arg(urlStr, reply->errorString());
-        }
-        
-        reply->deleteLater();
-        saveInteractionToDb("system", result);
-        apiClient->sendPrompt(result); // Feed the HTML straight back to the LLM
-        return;
-    }
-
-    // 8. VISUAL ACTION: Take Screenshot (Must go through UI Modal)
-    if (functionName == "take_screenshot") {
-        AgentCommand command;
-        command.action = functionName;
-        command.target = "GUI Application";
-        handleAgentActionRequest(command);
-        return;
-    }
-}
-
-// --- TOOLBAR LOGIC ---
-
-void MainWindow::openSettings() {
-    SettingsDialog dialog(this);
-    if (dialog.exec() == QDialog::Accepted) {
-        // Update the live API client if the user changed their key
-        QSettings settings;
-        apiClient->setApiKey(settings.value("api_key").toString());
-        
-        chatDisplay->append("<span style=\"color: green;\">[System: Settings updated successfully]</span>");
-    }
-}
-
+/**
+ * @brief Hot-swaps the application to a different local project.
+ */
 void MainWindow::switchSession() {
     SessionDialog sessionDlg(this);
     if (sessionDlg.exec() == QDialog::Accepted) {
         SessionData activeSession = sessionDlg.getSelectedSession();
 
-        // Prevent reloading if they picked the session they are already in
         if (activeSession.id == currentSessionId) return;
 
-        // Apply new session data
         currentSessionId = activeSession.id;
         currentWorkspacePath = activeSession.workspace;
         setWindowTitle(QString("Gemini Agent - %1").arg(activeSession.name));
 
-        // Wipe the UI and reset the Google API state to start fresh
+        // Wipe UI and sever the Google API thread
         chatDisplay->clear();
         apiClient->resetSession(); 
 
-        // Load the new session's history
         bool isExistingSession = loadHistoryFromDb();
 
         if (!isExistingSession) {
             QString systemInstructions = buildSystemPrompt();
-                
             saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
             apiClient->sendPrompt(systemInstructions);
         } else {
@@ -706,7 +370,43 @@ void MainWindow::switchSession() {
     }
 }
 
-// --- MULTI-MODAL & ATTACHMENT LOGIC ---
+/**
+ * @brief Opens the global settings dialogue (API Keys, PATs).
+ */
+void MainWindow::openSettings() {
+    SettingsDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        QSettings settings;
+        apiClient->setApiKey(settings.value("api_key").toString());
+        chatDisplay->append("<span style=\"color: green;\">[System: Settings updated successfully]</span>");
+    }
+}
+
+// ============================================================================
+// MULTI-MODAL & USER INPUT
+// ============================================================================
+
+/**
+ * @brief Packages text and attached files to send to the LLM.
+ */
+void MainWindow::handleSendClicked() {
+    QString userInput = inputField->text();
+    
+    if (!userInput.isEmpty() || !pendingAttachments.isEmpty()) {
+        QString displayMsg = userInput;
+        if (!pendingAttachments.isEmpty()) {
+            displayMsg += QString(" <i>[Attached %1 file(s)]</i>").arg(pendingAttachments.size());
+        }
+
+        chatDisplay->append("<b>You:</b> " + displayMsg);
+        saveInteractionToDb("user", displayMsg);
+        
+        apiClient->sendPrompt(userInput, pendingAttachments); 
+        
+        inputField->clear();
+        clearAttachments(); 
+    }
+}
 
 void MainWindow::attachFiles() {
     QStringList files = QFileDialog::getOpenFileNames(this, "Select Files to Attach");
@@ -732,14 +432,12 @@ void MainWindow::updateAttachmentUi() {
     }
 }
 
-// Drag & Drop: Accept the event if it contains URLs (files)
 void MainWindow::dragEnterEvent(QDragEnterEvent *event) {
     if (event->mimeData()->hasUrls()) {
         event->acceptProposedAction();
     }
 }
 
-// Drag & Drop: Extract the file paths when dropped
 void MainWindow::dropEvent(QDropEvent *event) {
     const QMimeData *mimeData = event->mimeData();
     if (mimeData->hasUrls()) {
@@ -751,5 +449,312 @@ void MainWindow::dropEvent(QDropEvent *event) {
         }
         updateAttachmentUi();
         event->acceptProposedAction();
+    }
+}
+
+// ============================================================================
+// API CALLBACKS
+// ============================================================================
+
+void MainWindow::onResponseReceived(const QString& responseText, const QString& interactionId) {
+    chatDisplay->append("<b>Agent:</b> " + responseText);
+    saveInteractionToDb("model", responseText, interactionId);
+}
+
+void MainWindow::onNetworkError(const QString& errorDetails) {
+    chatDisplay->append("<span style=\"color: red;\"><b>Error:</b> " + errorDetails + "</span>");
+}
+
+void MainWindow::onUsageMetricsReceived(int inputTokens, int outputTokens, int totalTokens) {
+    tokenDisplayLabel->setText(QString("Tokens: %1 In | %2 Out | %3 Total").arg(inputTokens).arg(outputTokens).arg(totalTokens));
+}
+
+// ============================================================================
+// THE AGENT TOOL ROUTER
+// ============================================================================
+
+/**
+ * @brief Intercepts raw tool calls from Google and routes them to local execution.
+ */
+void MainWindow::handleNativeFunctionCall(const QString& functionName, const QJsonObject& arguments) {
+    chatDisplay->append(QString("<span style=\"color: orange;\"><i>[Agent requested tool execution: %1]</i></span>").arg(functionName));
+
+    // 1. Write File
+    if (functionName == "write_file") {
+        QString absoluteTarget = resolveAndVerifyPath(arguments["target"].toString());
+        if (absoluteTarget.isEmpty()) {
+            apiClient->sendPrompt("System Error: Security violation. Path is outside the workspace.");
+            return;
+        }
+
+        AgentCommand command;
+        command.action = functionName;
+        command.target = absoluteTarget;
+        command.payload = arguments["payload"].toString();
+        
+        handleAgentActionRequest(command);
+        return;
+    }
+    
+    // 2. Read File (Silent action)
+    if (functionName == "read_file") {
+        QString absoluteTarget = resolveAndVerifyPath(arguments["target"].toString());
+        QFile file(absoluteTarget);
+        QString result;
+
+        if (absoluteTarget.isEmpty() || !file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            result = "System Error: File not found or access denied.";
+        } else {
+            result = QString("System [read_file]:\n%1").arg(QString(file.readAll()));
+            file.close();
+        }
+        saveInteractionToDb("system", result);
+        apiClient->sendPrompt(result);
+        return;
+    }
+    
+    // 3. List Directory (Silent action)
+    if (functionName == "list_directory") {
+        QString absoluteTarget = resolveAndVerifyPath(arguments["target"].toString());
+        QString result;
+
+        if (absoluteTarget.isEmpty()) {
+            result = "System Error: Invalid directory.";
+        } else {
+            QDir dir(absoluteTarget);
+            result = QString("System [list_directory]:\n%1").arg(dir.entryList(QDir::AllEntries | QDir::NoDotAndDotDot).join("\n"));
+        }
+        saveInteractionToDb("system", result);
+        apiClient->sendPrompt(result);
+        return;
+    }
+
+    // 4. Execute Shell Command (Destructive, Modal required)
+    if (functionName == "execute_shell_command") {
+        AgentCommand command;
+        command.action = functionName;
+        command.target = arguments["command"].toString(); 
+        handleAgentActionRequest(command);
+        return;
+    }
+
+    // 5. FTP Upload (Destructive, Modal required)
+    if (functionName == "upload_ftp") {
+        QString localPath = resolveAndVerifyPath(arguments["local_path"].toString());
+        if (localPath.isEmpty()) {
+            apiClient->sendPrompt("System Error: Local file path is outside the workspace.");
+            return;
+        }
+
+        AgentCommand command;
+        command.action = functionName;
+        command.target = localPath; 
+        
+        QJsonObject ftpArgs;
+        ftpArgs["remote_url"] = arguments["remote_url"].toString();
+        ftpArgs["username"] = arguments["username"].toString();
+        ftpArgs["password"] = arguments["password"].toString();
+        command.payload = QJsonDocument(ftpArgs).toJson(QJsonDocument::Compact);
+
+        handleAgentActionRequest(command);
+        return;
+    }
+
+    // 6. Fetch Webpage (Silent action)
+    if (functionName == "fetch_webpage") {
+        QString urlStr = arguments["url"].toString();
+        
+        QNetworkAccessManager manager;
+        QNetworkRequest request((QUrl(urlStr)));
+        QNetworkReply* reply = manager.get(request);
+        
+        QEventLoop loop;
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        
+        QString result;
+        if (reply->error() == QNetworkReply::NoError) {
+            result = QString("System [fetch_webpage %1]:\n%2").arg(urlStr, QString::fromUtf8(reply->readAll()));
+        } else {
+            result = QString("System Error [fetch_webpage %1]: %2").arg(urlStr, reply->errorString());
+        }
+        
+        reply->deleteLater();
+        saveInteractionToDb("system", result);
+        apiClient->sendPrompt(result); 
+        return;
+    }
+
+    // 7. Take Screenshot (Privacy implications, Modal required)
+    if (functionName == "take_screenshot") {
+        AgentCommand command;
+        command.action = functionName;
+        command.target = "GUI Application";
+        handleAgentActionRequest(command);
+        return;
+    }
+}
+
+// ============================================================================
+// THE DESTRUCTIVE ACTION EXECUTOR
+// ============================================================================
+
+/**
+ * @brief OS-native logic to crop a screenshot to the exact boundary of a running process window.
+ */
+QPixmap MainWindow::captureProcessWindow(qint64 processId) {
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen) return QPixmap();
+
+    QPixmap fullScreen = screen->grabWindow(0);
+
+#ifdef Q_OS_WIN
+    WindowSearchData searchData = { static_cast<DWORD>(processId), nullptr };
+    EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&searchData));
+
+    if (searchData.hwnd) {
+        RECT rect;
+        if (GetWindowRect(searchData.hwnd, &rect)) {
+            int x = rect.left;
+            int y = rect.top;
+            int width = rect.right - rect.left;
+            int height = rect.bottom - rect.top;
+            
+            return fullScreen.copy(x, y, width, height);
+        }
+    }
+#endif
+
+    return fullScreen; 
+}
+
+/**
+ * @brief The Security Modal and Execution Engine for destructive or privacy-impacting actions.
+ */
+void MainWindow::handleAgentActionRequest(const AgentCommand& command) {
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle("Agent Action Approval");
+    msgBox.setText(QString("The agent wants to execute: <b>%1</b>\nTarget: %2\n\nDo you allow this?").arg(command.action, command.target));
+    msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+    msgBox.setDefaultButton(QMessageBox::No);
+
+    if (msgBox.exec() == QMessageBox::Yes) {
+        chatDisplay->append(QString("<span style=\"color: green;\">[System: Executed %1 on %2]</span>").arg(command.action, command.target));
+        QString systemFeedbackMsg;
+
+        // Route 1: Write File
+        if (command.action == "write_file") {
+            agentController->executeApprovedAction(command);
+            systemFeedbackMsg = "System: Action approved. File written successfully.";
+        } 
+        
+        // Route 2: Shell / Terminal Execution (Hybrid Wait)
+        else if (command.action == "execute_shell_command") {
+            if (agentProcess->state() == QProcess::Running) {
+                agentProcess->terminate();
+                agentProcess->waitForFinished(2000); 
+            }
+
+            agentProcess->setWorkingDirectory(currentWorkspacePath); 
+
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            QSettings settings;
+            QString githubPat = settings.value("github_pat", "").toString();
+            
+            if (!githubPat.isEmpty()) {
+                env.insert("GITHUB_PAT", githubPat);
+                env.insert("GITHUB_TOKEN", githubPat); 
+            }
+            agentProcess->setProcessEnvironment(env);
+
+            #ifdef Q_OS_WIN
+                agentProcess->start("cmd.exe", QStringList() << "/c" << command.target);
+            #else
+                agentProcess->start("/bin/sh", QStringList() << "-c" << command.target);
+            #endif
+
+            // Wait up to 5 seconds. If it finishes, it's a CLI tool. If not, it's a persistent GUI/Server.
+            bool finished = agentProcess->waitForFinished(5000); 
+
+            if (finished) {
+                QByteArray stdOut = agentProcess->readAllStandardOutput();
+                QByteArray stdErr = agentProcess->readAllStandardError();
+
+                systemFeedbackMsg = QString("System [execute_shell_command]:\nExit Code: %1\nSTDOUT:\n%2\nSTDERR:\n%3")
+                                     .arg(agentProcess->exitCode())
+                                     .arg(QString::fromLocal8Bit(stdOut).trimmed())
+                                     .arg(QString::fromLocal8Bit(stdErr).trimmed());
+            } else {
+                systemFeedbackMsg = QString("System [execute_shell_command]: Process started and is running in the background. Process ID: %1\n"
+                                            "(Note: If this is a GUI application, you may now use the take_screenshot tool).")
+                                     .arg(agentProcess->processId());
+            }
+        }
+        
+        // Route 3: Native FTP Upload
+        else if (command.action == "upload_ftp") {
+            QJsonObject ftpArgs = QJsonDocument::fromJson(command.payload.toUtf8()).object();
+            QString remoteUrl = ftpArgs["remote_url"].toString();
+            
+            QUrl url(remoteUrl);
+            url.setUserName(ftpArgs["username"].toString());
+            url.setPassword(ftpArgs["password"].toString());
+
+            QFile* fileToUpload = new QFile(command.target);
+            if (!fileToUpload->open(QIODevice::ReadOnly)) {
+                systemFeedbackMsg = "System Error: Could not open local file for upload.";
+                delete fileToUpload;
+            } else {
+                QNetworkAccessManager ftpManager;
+                QNetworkRequest request(url);
+                QNetworkReply* reply = ftpManager.put(request, fileToUpload);
+                
+                QEventLoop loop;
+                connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+                loop.exec();
+
+                if (reply->error() == QNetworkReply::NoError) {
+                    systemFeedbackMsg = "System [upload_ftp]: Upload successful to " + remoteUrl;
+                } else {
+                    systemFeedbackMsg = "System Error [upload_ftp]: " + reply->errorString();
+                }
+                
+                reply->deleteLater();
+                fileToUpload->setParent(reply); 
+            }
+        }
+        
+        // Route 4: GUI Screenshot
+        else if (command.action == "take_screenshot") {
+            qint64 pid = agentProcess->processId();
+            
+            if (pid == 0 || agentProcess->state() != QProcess::Running) {
+                systemFeedbackMsg = "System Error: No active GUI application is currently running to screenshot.";
+            } else {
+                QPixmap croppedShot = captureProcessWindow(pid);
+                
+                QMessageBox imgBox(this);
+                imgBox.setWindowTitle("Security Intercept: Approve Image");
+                imgBox.setText("The agent wants to send this image to the API. Do you approve?");
+                imgBox.setIconPixmap(croppedShot.scaledToWidth(400, Qt::SmoothTransformation));
+                imgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                
+                if (imgBox.exec() == QMessageBox::Yes) {
+                    QString savePath = QDir(currentWorkspacePath).absoluteFilePath("agent_vision_capture.png");
+                    croppedShot.save(savePath, "PNG");
+                    
+                    systemFeedbackMsg = QString("System [take_screenshot]: Success. Image saved locally as '%1'. Please read the file to analyze the UI.").arg("agent_vision_capture.png");
+                } else {
+                    systemFeedbackMsg = "System Error: The human user DENIED the screenshot request due to privacy concerns.";
+                }
+            }
+        }
+
+        saveInteractionToDb("system", systemFeedbackMsg);
+        apiClient->sendPrompt(systemFeedbackMsg);
+        
+    } else {
+        chatDisplay->append(QString("<span style=\"color: red;\">[System: Denied %1 on %2]</span>").arg(command.action, command.target));
+        apiClient->sendPrompt(QString("System: User denied permission to execute %1.").arg(command.action));
     }
 }

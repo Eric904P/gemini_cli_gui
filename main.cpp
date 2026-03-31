@@ -1,16 +1,22 @@
-// update your main.cpp
+/**
+ * @file main.cpp
+ * @brief Application entry point for the Gemini Native Agent.
+ *
+ * This file initializes the core Qt application framework, instantiates
+ * the primary GUI window, and hands over control to the Qt event loop.
+ */
+
 #include <QApplication>
 #include "main_window.h"
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
+    // Initialize the Qt application object required for GUI and event handling
     QApplication app(argc, argv);
-
-    // set global application identifiers for the QSettings registry
-    QCoreApplication::setOrganizationName("LewisDevelopment");
-    QCoreApplication::setApplicationName("GeminiNativeClient");
-
-    MainWindow window;
-    window.show();
-
+    
+    // Create and display the primary application window
+    MainWindow mainWindow;
+    mainWindow.show();
+    
+    // Execute the application's main event loop and block until exit
     return app.exec();
 }
