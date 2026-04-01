@@ -1,10 +1,6 @@
 /**
  * @file gemini_payload_builder.cpp
  * @brief Implementation of the Gemini payload builder.
- *
- * Handles the reading of local files, base64 encoding for images, 
- * raw text extraction for code files, and the strict formatting 
- * of the Google Gemini REST API json payload.
  */
 
 #include "gemini_payload_builder.h"
@@ -15,65 +11,73 @@
 #include <QFile>
 #include <QMimeDatabase>
 
-QByteArray GeminiPayloadBuilder::buildRequest(const QString& text, const QStringList& attachments, const QJsonArray& tools) {
+QByteArray GeminiPayloadBuilder::buildRequest(const QList<InteractionData>& history, const QString& text, const QStringList& attachments, const QJsonArray& tools) {
     QJsonObject rootObj;
-    QJsonArray partsArray;
-
-    // --- Explicitly define the target LLM ---
     rootObj["model"] = "gemini-2.5-flash"; 
 
-    // Append the primary text prompt directly to the flattened array
-    if (!text.isEmpty()) {
+    QJsonArray inputArray;
+
+    // 1. Pack the SQLite chat history as explicit "Turn" objects
+    for (const auto& interaction : history) {
+        QString apiRole = (interaction.role == "model") ? "model" : "user";
+        
         QJsonObject textPart;
-        textPart["text"] = text;
-        partsArray.append(textPart);
+        textPart["type"] = "text";
+        textPart["text"] = interaction.content;
+        
+        QJsonArray contentArray;
+        contentArray.append(textPart);
+        
+        QJsonObject turnObj;
+        turnObj["role"] = apiRole;
+        turnObj["content"] = contentArray;
+        
+        inputArray.append(turnObj);
     }
 
-    // Process and append any multi-modal file attachments
+    // 2. Pack the CURRENT turn (Text + Files)
+    QJsonArray currentContentArray;
+    if (!text.isEmpty()) {
+        QJsonObject textPart;
+        textPart["type"] = "text";
+        textPart["text"] = text;
+        currentContentArray.append(textPart);
+    }
+
     for (const QString& filePath : attachments) {
         QFile file(filePath);
         if (file.open(QIODevice::ReadOnly)) {
             QString mimeType = getMimeType(filePath);
-            
-            // If it's a text file, append as raw text to save vision tokens
             if (mimeType.startsWith("text/") || mimeType == "application/json" || mimeType.isEmpty()) {
-                QString fileContent = QString::fromUtf8(file.readAll());
                 QJsonObject textPart;
-                textPart["text"] = QString("\n--- FILE: %1 ---\n%2\n").arg(QFileInfo(filePath).fileName(), fileContent);
-                partsArray.append(textPart);
-            } 
-            // If it's an image or binary, base64 encode it for the vision model
-            else {
-                QByteArray fileData = file.readAll();
-                QJsonObject inlineDataObj;
-                inlineDataObj["mime_type"] = mimeType;
-                inlineDataObj["data"] = QString::fromLatin1(fileData.toBase64());
-                
-                QJsonObject partObj;
-                partObj["inline_data"] = inlineDataObj;
-                partsArray.append(partObj);
+                textPart["type"] = "text";
+                textPart["text"] = QString("\n--- FILE: %1 ---\n%2\n").arg(QFileInfo(filePath).fileName(), QString::fromUtf8(file.readAll()));
+                currentContentArray.append(textPart);
+            } else {
+                QJsonObject imgPart;
+                imgPart["type"] = "image";
+                imgPart["data"] = QString::fromLatin1(file.readAll().toBase64());
+                imgPart["mime_type"] = mimeType;
+                currentContentArray.append(imgPart);
             }
             file.close();
         }
     }
 
-    // --- CRITICAL FIX: The v1beta Interactions API is stateful and flattened. ---
-    // We do not wrap this in 'roles' or 'contents'. We just pass the parts directly to 'input'.
-    if (partsArray.size() == 1 && partsArray[0].toObject().contains("text")) {
-        // If it's just text, we can pass it as a simple string to be ultra-clean
-        rootObj["input"] = partsArray[0].toObject()["text"].toString();
-    } else {
-        // If it's multi-modal, we pass the flattened array of parts
-        rootObj["input"] = partsArray;
+    if (!currentContentArray.isEmpty()) {
+        QJsonObject currentTurnObj;
+        currentTurnObj["role"] = "user";
+        currentTurnObj["content"] = currentContentArray;
+        inputArray.append(currentTurnObj);
     }
 
-    // Inject the agent's tools into the payload
+    rootObj["input"] = inputArray;
+
     if (!tools.isEmpty()) {
         rootObj["tools"] = tools;
     }
 
-    QJsonDocument doc(rootObj);
-    return doc.toJson(QJsonDocument::Compact);
+    return QJsonDocument(rootObj).toJson(QJsonDocument::Compact);
 }
 
 QString GeminiPayloadBuilder::getMimeType(const QString& filePath) {

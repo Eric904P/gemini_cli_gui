@@ -12,6 +12,7 @@
 #include "settings_dialog.h"
 #include "session_dialog.h"
 #include "agent_prompt_builder.h"
+#include "chat_formatter.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -86,11 +87,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     bool isExistingSession = loadHistoryFromDb(); 
 
     if (!isExistingSession) {
-        QString systemInstructions = AgentPromptBuilder::buildSystemInstruction(currentWorkspacePath);
-        saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
-        apiClient->sendPrompt(systemInstructions);
+            QString systemInstructions = AgentPromptBuilder::buildSystemInstruction(currentWorkspacePath);
+            saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
+            QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
+            apiClient->sendPrompt(history, systemInstructions);
     } else {
-        chatDisplay->append("<span style=\"color: green;\">[System: Session Restored Successfully]</span>");
+        QTextCursor cursor = chatDisplay->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        chatDisplay->setTextCursor(cursor);
+        chatDisplay->insertHtml("<span style=\"color: green;\">[System: Session Restored Successfully]</span><br><br>");
+        chatDisplay->ensureCursorVisible();
     }
 }
 
@@ -115,9 +121,6 @@ void MainWindow::setupUi() {
     chatDisplay = new QTextEdit(this);
     chatDisplay->setReadOnly(true);
 
-    // bind the syntax engine directly to the chat's underlying text document
-syntaxHighlighter = new ChatSyntaxHighlighter(chatDisplay->document());
-    
     tokenDisplayLabel = new QLabel("Tokens: 0 In | 0 Out", this);
     tokenDisplayLabel->setAlignment(Qt::AlignRight);
     tokenDisplayLabel->setStyleSheet("color: gray; font-size: 10px;");
@@ -194,20 +197,29 @@ bool MainWindow::loadHistoryFromDb() {
 
     QString lastInteractionId;
 
+    // Grab the cursor so we can inject raw text to preserve \n for the syntax engine
+    QTextCursor cursor = chatDisplay->textCursor();
+
     for (const InteractionData& data : history) {
         if (!data.apiId.isEmpty()) {
             lastInteractionId = data.apiId;
         }
 
+        cursor.movePosition(QTextCursor::End);
+        chatDisplay->setTextCursor(cursor);
+
         if (data.role == "user") {
-            chatDisplay->append("<b>You:</b> " + data.content);
+            chatDisplay->insertHtml("<b>You:</b><br>" + ChatFormatter::formatMarkdownToHtml(data.content) + "<br>");
         } else if (data.role == "model") {
-            chatDisplay->append("<b>Agent:</b> " + data.content);
+            chatDisplay->insertHtml("<b>Agent:</b><br>" + ChatFormatter::formatMarkdownToHtml(data.content) + "<br>");
         } else if (data.role == "system") {
-            chatDisplay->append("<span style=\"color: gray;\">" + data.content + "</span>");
+            chatDisplay->insertHtml("<span style=\"color: gray;\">" + data.content + "</span><br><br>");
         }
     }
 
+    chatDisplay->ensureCursorVisible();
+
+    // Pass the state token back to the API client so the LLM remembers the context
     if (!lastInteractionId.isEmpty()) {
         apiClient->restoreSession(lastInteractionId);
     }
@@ -234,9 +246,14 @@ void MainWindow::switchSession() {
         if (!isExistingSession) {
             QString systemInstructions = AgentPromptBuilder::buildSystemInstruction(currentWorkspacePath);
             saveInteractionToDb("system", "System Sandbox Initialized: " + currentWorkspacePath);
-            apiClient->sendPrompt(systemInstructions);
+            QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
+            apiClient->sendPrompt(history, systemInstructions);
         } else {
-            chatDisplay->append("<span style=\"color: green;\">[System: Switched to existing session]</span>");
+            QTextCursor cursor = chatDisplay->textCursor();
+            cursor.movePosition(QTextCursor::End);
+            chatDisplay->setTextCursor(cursor);
+            chatDisplay->insertHtml("<span style=\"color: green;\">[System: Switched to existing session]</span><br><br>");
+            chatDisplay->ensureCursorVisible();
         }
     }
 }
@@ -246,7 +263,13 @@ void MainWindow::openSettings() {
     if (dialog.exec() == QDialog::Accepted) {
         QSettings settings;
         apiClient->setApiKey(settings.value("api_key").toString());
-        chatDisplay->append("<span style=\"color: green;\">[System: Settings updated successfully]</span>");
+        
+        // Use the new cursor method for perfect spacing
+        QTextCursor cursor = chatDisplay->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        chatDisplay->setTextCursor(cursor);
+        chatDisplay->insertHtml("<span style=\"color: green;\">[System: Settings updated successfully]</span><br><br>");
+        chatDisplay->ensureCursorVisible();
     }
 }
 
@@ -263,10 +286,18 @@ void MainWindow::handleSendClicked() {
             displayMsg += QString(" <i>[Attached %1 file(s)]</i>").arg(pendingAttachments.size());
         }
 
-        chatDisplay->append("<b>You:</b><br>" + displayMsg.toHtmlEscaped());
+        QTextCursor cursor = chatDisplay->textCursor();
+        cursor.movePosition(QTextCursor::End);
+        chatDisplay->setTextCursor(cursor);
+        
+        chatDisplay->insertHtml("<b>You:</b><br>" + ChatFormatter::formatMarkdownToHtml(displayMsg) + "<br>");
+        chatDisplay->ensureCursorVisible();
+        
         saveInteractionToDb("user", displayMsg);
         
-        apiClient->sendPrompt(userInput, pendingAttachments); 
+        // Fetch and pass the history!
+        QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
+        apiClient->sendPrompt(history, userInput, pendingAttachments);
         
         inputField->clear();
         clearAttachments(); 
@@ -322,8 +353,13 @@ void MainWindow::dropEvent(QDropEvent *event) {
 // ============================================================================
 
 void MainWindow::onResponseReceived(const QString& responseText, const QString& interactionId) {
-    // escape html to prevent <iostream> from disappearing, but keep our bold name tags
-    chatDisplay->append("<b>Agent:</b><br>" + responseText.toHtmlEscaped());
+    QTextCursor cursor = chatDisplay->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    chatDisplay->setTextCursor(cursor);
+    
+    chatDisplay->insertHtml("<b>Agent:</b><br>" + ChatFormatter::formatMarkdownToHtml(responseText) + "<br>");
+    chatDisplay->ensureCursorVisible();
+
     saveInteractionToDb("model", responseText, interactionId);
 }
 
@@ -356,7 +392,8 @@ void MainWindow::handleNativeFunctionCalls(const QJsonArray& toolCalls) {
     QString finalFeedback = batchSystemFeedback.trimmed();
     if (!finalFeedback.isEmpty()) {
         saveInteractionToDb("system", finalFeedback);
-        apiClient->sendPrompt(finalFeedback);
+        QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
+        apiClient->sendPrompt(history, finalFeedback);
     }
 }
 
@@ -372,8 +409,8 @@ void MainWindow::onAgentSystemFeedback(const QString& feedback) {
     if (isBatchProcessing) {
         batchSystemFeedback += cleanFeedback + "\n\n";
     } else {
-        // Fallback for single, non-batched system messages
         saveInteractionToDb("system", cleanFeedback);
-        apiClient->sendPrompt(cleanFeedback);
+        QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
+        apiClient->sendPrompt(history, cleanFeedback);
     }
 }

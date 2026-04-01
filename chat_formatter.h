@@ -1,0 +1,25 @@
+/**
+ * @file chat_formatter.h
+ * @brief Utility class for parsing markdown into styled HTML.
+ *
+ * This class isolates all regex, string manipulation, and syntax 
+ * highlighting logic away from the main UI thread. It converts raw 
+ * LLM markdown into beautiful, web-style HTML tables.
+ */
+
+#ifndef CHAT_FORMATTER_H
+#define CHAT_FORMATTER_H
+
+#include <QString>
+
+class ChatFormatter {
+public:
+    /**
+     * @brief Parses raw markdown into rich HTML tables with isolated inline syntax highlighting.
+     * @param markdown The raw text from the LLM or Database.
+     * @return A styled HTML string ready for injection into a QTextEdit.
+     */
+    [[nodiscard]] static QString formatMarkdownToHtml(const QString& markdown);
+};
+
+#endif // CHAT_FORMATTER_H

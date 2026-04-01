@@ -42,36 +42,23 @@ void GeminiApiClient::resetSession() {
     currentApiInteractionId.clear();
 }
 
-void GeminiApiClient::sendPrompt(const QString& text, const QStringList& attachments) {
+void GeminiApiClient::sendPrompt(const QList<InteractionData>& history, const QString& text, const QStringList& attachments) {
     if (apiKey.isEmpty()) {
         emit networkError("API Key is missing. Please update your settings.");
         return;
     }
 
-    // securely retrieve our massive tool schema array
     QJsonArray availableTools = ToolSchemaProvider::getAvailableTools();
-
-    // delegate the heavy base64 and mime-type processing to our builder class
-    QByteArray rawPayload = GeminiPayloadBuilder::buildRequest(text, attachments, availableTools);
+    QByteArray finalPayload = GeminiPayloadBuilder::buildRequest(history, text, attachments, availableTools);
     
-    // inject our stateful interaction id to offload memory management to the server
-    QJsonObject payloadObj = QJsonDocument::fromJson(rawPayload).object();
-    if (!currentApiInteractionId.isEmpty()) {
-        payloadObj["previous_interaction_id"] = currentApiInteractionId;
-    }
-    QByteArray finalPayload = QJsonDocument(payloadObj).toJson(QJsonDocument::Compact);
-
-    // construct the secure rest api endpoint
     QUrl endpoint("https://generativelanguage.googleapis.com/v1beta/interactions?key=" + apiKey);
     QNetworkRequest request(endpoint);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
 
-    // transmit the payload asynchronously
     networkManager->post(request, finalPayload);
 }
 
 void GeminiApiClient::onNetworkReply(QNetworkReply* reply) {
-    // queue the reply object for garbage collection to prevent memory leaks
     reply->deleteLater();
 
     if (reply->error() != QNetworkReply::NoError) {
@@ -82,54 +69,49 @@ void GeminiApiClient::onNetworkReply(QNetworkReply* reply) {
     QByteArray responseData = reply->readAll();
     QJsonObject rootObj = QJsonDocument::fromJson(responseData).object();
 
-    // update our stateful tracking id if the server provided a new one
-    if (rootObj.contains("interaction_id")) {
-        currentApiInteractionId = rootObj["interaction_id"].toString();
+    // Extract the stateful tracking ID
+    if (rootObj.contains("id")) {
+        currentApiInteractionId = rootObj["id"].toString();
     }
 
-    // extract and broadcast live token consumption metrics
-    if (rootObj.contains("usage_metadata")) {
-        QJsonObject usage = rootObj["usage_metadata"].toObject();
+    // Extract live token consumption metrics (snake_case as per docs)
+    if (rootObj.contains("usage")) {
+        QJsonObject usage = rootObj["usage"].toObject();
         emit usageMetricsReceived(
-            usage["prompt_token_count"].toInt(),
-            usage["candidates_token_count"].toInt(),
-            usage["total_token_count"].toInt()
+            usage["total_input_tokens"].toInt(),
+            usage["total_output_tokens"].toInt(),
+            usage["total_tokens"].toInt()
         );
     }
 
-    // Parse the actual response payload (Text or Tool Call)
+    // Parse the outputs array for text and tool executions
     if (rootObj.contains("outputs")) {
         QJsonArray outputsArray = rootObj["outputs"].toArray();
         QString combinedText = "";
-        QJsonArray requestedTools; // Collect all tools requested in this turn
+        QJsonArray requestedTools;
 
         for (int i = 0; i < outputsArray.size(); ++i) {
             QJsonObject outputObj = outputsArray[i].toObject();
             QString type = outputObj["type"].toString();
 
-            // Handle Standard Text Output
             if (type == "text" && outputObj.contains("text")) {
                 combinedText += outputObj["text"].toString() + "\n";
             }
-            // Handle Autonomous Tool Request (Batch them!)
             else if (type == "function_call") {
                 requestedTools.append(outputObj);
             }
         }
 
-        // Print whatever text the agent had to say
         if (!combinedText.isEmpty()) {
             emit responseReceived(combinedText.trimmed(), currentApiInteractionId);
         }
 
-        // Emit the BATCH of tools to be processed
         if (!requestedTools.isEmpty()) {
             emit functionCallsRequested(requestedTools);
         }
         return;
     }
     
-    // fallback error logging if the payload format changes unexpectedly
     QString rawJson = QJsonDocument(rootObj).toJson(QJsonDocument::Indented);
     emit networkError("Unexpected response format. Raw Google Response:\n" + rawJson);
 }

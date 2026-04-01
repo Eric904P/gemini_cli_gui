@@ -10,6 +10,8 @@
 #ifndef GEMINI_API_CLIENT_H
 #define GEMINI_API_CLIENT_H
 
+#include "database_manager.h"
+
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -54,7 +56,7 @@ public:
      * @param text The user's input or system instruction.
      * @param attachments A list of local file paths to encode and include.
      */
-    void sendPrompt(const QString& text, const QStringList& attachments = QStringList());
+    void sendPrompt(const QList<InteractionData>& history, const QString& text, const QStringList& attachments = QStringList());
 
 signals:
     /**

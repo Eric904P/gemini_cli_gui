@@ -21,7 +21,6 @@
 
 #include "agent_manager.h"
 #include "database_manager.h"
-#include "chat_syntax_highlighter.h"
 
 // forward declarations to reduce header bloat
 class GeminiApiClient;
@@ -92,7 +91,6 @@ private:
     GeminiApiClient* apiClient{nullptr};
     AgentActionManager* agentController{nullptr};
     DatabaseManager* dbManager{nullptr};   ///< central manager for all sqlite operations
-    ChatSyntaxHighlighter* syntaxHighlighter{nullptr};
 
     // --- session state ---
     QString currentSessionId;

@@ -10,6 +10,8 @@
 #ifndef GEMINI_PAYLOAD_BUILDER_H
 #define GEMINI_PAYLOAD_BUILDER_H
 
+#include "database_manager.h"
+
 #include <QByteArray>
 #include <QString>
 #include <QStringList>
@@ -24,7 +26,7 @@ public:
      * @param tools The JSON array of available agent tools.
      * @return The formatted UTF-8 JSON byte array ready for network transmission.
      */
-    [[nodiscard]] static QByteArray buildRequest(const QString& text, const QStringList& attachments, const QJsonArray& tools);
+    [[nodiscard]] static QByteArray buildRequest(const QList<InteractionData>& history, const QString& text, const QStringList& attachments, const QJsonArray& tools);
 
 private:
     /**
