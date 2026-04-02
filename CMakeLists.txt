@@ -20,33 +20,49 @@ set(CMAKE_AUTOUIC ON) # processes designer files (.ui)
 # note: if cmake fails to find qt, you will need to set CMAKE_PREFIX_PATH
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Sql)
 
-# define the executable and its source files
+# define the executable and its source files using relative paths
 add_executable(GeminiNativeAgent WIN32
     main.cpp
     main_window.cpp
-    gemini_api_client.cpp
-    agent_manager.cpp
-    settings_dialog.cpp
-    session_dialog.cpp
-    database_manager.cpp
-    tool_schema_provider.cpp
-    gemini_payload_builder.cpp
-    write_file_action.cpp
-    ftp_upload_action.cpp
-    execute_shell_action.cpp
-    take_screenshot_action.cpp
-    agent_prompt_builder.cpp
-    chat_formatter.cpp
-    git_manager_action.cpp
+    
+    # Agent Core & API
+    agent/gemini_api_client.cpp
+    agent/agent_manager.cpp
+    agent/agent_prompt_builder.cpp
+    agent/gemini_payload_builder.cpp
+    
+    # Settings & Theme
+    settings/settings_dialog.cpp
+    settings/theme_manager.h
+    
+    # Data & Sessions
+    data/session_dialog.cpp
+    data/database_manager.cpp
+    data/chat_formatter.cpp
+    
+    # Tools & Actions
+    tools/base_agent_action.h
+    tools/tool_schema_provider.cpp
+    tools/write_file_action.cpp
+    tools/ftp_upload_action.cpp
+    tools/execute_shell_action.cpp
+    tools/take_screenshot_action.cpp
+    tools/git_manager_action.cpp
+)
 
-    base_agent_action.h
-    theme_manager.h
+# --- CRITICAL ADDITION ---
+# Tell CMake to search these subdirectories for Header (.h) files.
+# This prevents you from having to rewrite every #include in your .cpp files!
+target_include_directories(GeminiNativeAgent PRIVATE 
+    ${CMAKE_CURRENT_SOURCE_DIR}/agent
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools
+    ${CMAKE_CURRENT_SOURCE_DIR}/data
+    ${CMAKE_CURRENT_SOURCE_DIR}/settings
 )
 
 # --- AUTOMATIC QT DLL DEPLOYMENT ---
 
 # 1. Find the path to Qt's built-in deployment tool
-# We grab the directory of the qmake executable so CMake knows exactly where to look
 if(TARGET Qt6::qmake)
     get_target_property(QMAKE_EXE Qt6::qmake IMPORTED_LOCATION)
 elseif(TARGET Qt5::qmake)
