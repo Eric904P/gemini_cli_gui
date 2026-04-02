@@ -10,6 +10,8 @@
 
 #include <QSettings>
 #include <QProcessEnvironment>
+#include <QCoreApplication>
+#include <QDir>
 
 ExecuteShellAction::ExecuteShellAction(QObject* parent) : BaseAgentAction(parent) {
     agentProcess = new QProcess(this);
@@ -42,6 +44,17 @@ void ExecuteShellAction::execute(const AgentCommand& command, const QString& wor
 
     // inject global credentials into the environment for silent authentication
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    
+    QString appDir = QCoreApplication::applicationDirPath();
+    
+    // Build native paths to our bundled tools
+    QString mingwPath = QDir::toNativeSeparators(QDir(appDir).filePath("runtimes/mingw/bin"));
+    QString pythonPath = QDir::toNativeSeparators(QDir(appDir).filePath("runtimes/python"));
+    QString nodePath = QDir::toNativeSeparators(QDir(appDir).filePath("runtimes/node"));
+    
+    QString currentPath = env.value("PATH");
+    env.insert("PATH", mingwPath + ";" + pythonPath + ";" + nodePath + ";" + currentPath);
+
     QSettings settings;
     QString githubPat = settings.value("github_pat", "").toString();
     

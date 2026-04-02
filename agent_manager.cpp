@@ -10,7 +10,6 @@
 #include "agent_manager.h"
 
 #include "write_file_action.h"
-#include "execute_code_action.h"
 #include "ftp_upload_action.h"
 #include "execute_shell_action.h"
 #include "take_screenshot_action.h"
@@ -31,7 +30,6 @@
 
 AgentActionManager::AgentActionManager(QObject* parent) : QObject(parent) {
     registerAction(new WriteFileAction(this));
-    registerAction(new ExecuteCodeAction(this));
     registerAction(new FtpUploadAction(this));
     
     ExecuteShellAction* shellAction = new ExecuteShellAction(this);
@@ -86,10 +84,6 @@ void AgentActionManager::processFunctionCall(const QString& functionName, const 
         }
         command.target = absoluteTarget;
         command.payload = arguments["payload"].toString();
-    }
-    else if (functionName == "execute_code") {
-        command.target = arguments["language"].toString();
-        command.payload = arguments["code"].toString();
     }
     else if (functionName == "git_manager") {
         command.target = "Git Repository (Batch)";
