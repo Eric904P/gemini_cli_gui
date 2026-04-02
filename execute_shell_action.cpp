@@ -34,9 +34,11 @@ qint64 ExecuteShellAction::getActiveProcessId() const {
 
 void ExecuteShellAction::execute(const AgentCommand& command, const QString& workspacePath) {
     // terminate previous long-running tasks before starting a new one
-    if (agentProcess->state() == QProcess::Running) {
-        agentProcess->terminate();
-        agentProcess->waitForFinished(2000); 
+    if (!agentProcess) {
+        agentProcess = new QProcess(this);
+    } else if (agentProcess->state() != QProcess::NotRunning) {
+        agentProcess->kill();
+        agentProcess->waitForFinished();
     }
 
     // securely sandbox the execution to the project directory

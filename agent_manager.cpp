@@ -36,6 +36,7 @@ AgentActionManager::AgentActionManager(QObject* parent) : QObject(parent) {
     registerAction(shellAction);
     registerAction(new TakeScreenshotAction(shellAction, this));
     registerAction(new GitManagerAction(this));
+    addWhitelistedAction("take_screenshot");
 }
 
 AgentActionManager::~AgentActionManager() {}
@@ -69,8 +70,7 @@ QString AgentActionManager::resolveAndVerifyPath(const QString& relativeTarget, 
 }
 
 void AgentActionManager::processFunctionCall(const QString& functionName, const QJsonObject& arguments, const QString& workspacePath) {
-    emit cleanTextReady(QString("<span style=\"color: orange;\"><i>[Agent requested tool execution: %1]</i></span>").arg(functionName));
-
+    emit cleanTextReady(QString("UI_ONLY:<span style=\"color: orange;\"><i>[Agent requested tool execution: %1]</i></span>").arg(functionName));
     AgentCommand command;
     command.action = functionName;
     command.rationale = arguments["rationale"].toString();
@@ -188,10 +188,10 @@ void AgentActionManager::handleSecurityIntercept(const AgentCommand& command, co
     msgBox.setDefaultButton(QMessageBox::Yes);
 
     if (msgBox.exec() == QMessageBox::Yes) {
-        emit cleanTextReady(QString("<span style=\"color: green;\">[System: Approved %1 on %2...]</span>").arg(command.action, command.target));
+        emit cleanTextReady(QString("UI_ONLY:<span style=\"color: green;\">[System: Approved %1 on %2...]</span>").arg(command.action, command.target));
         executeApprovedAction(command, workspacePath);
     } else {
-        emit cleanTextReady(QString("<span style=\"color: red;\">[System: Denied %1 on %2]</span>").arg(command.action, command.target));
+        emit cleanTextReady(QString("UI_ONLY:<span style=\"color: red;\">[System: Denied %1 on %2]</span>").arg(command.action, command.target));
         emit cleanTextReady(QString("System Error: User denied permission to execute %1.").arg(command.action));
     }
 }

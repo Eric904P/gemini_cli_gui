@@ -13,6 +13,10 @@
 #include <QScreen>
 #include <QDir>
 #include <QMessageBox>
+#include <QPixmap>
+#include <QByteArray>
+#include <QBuffer>
+#include <QUrl>
 
 // include windows api for precise window cropping during screenshots
 #ifdef Q_OS_WIN
@@ -72,7 +76,6 @@ QPixmap TakeScreenshotAction::captureProcessWindow(qint64 processId) {
 }
 
 void TakeScreenshotAction::execute(const AgentCommand& command, const QString& workspacePath) {
-    // ask the shell action if it is currently running a background app
     qint64 pid = linkedShellAction->getActiveProcessId();
     
     if (pid == 0) {
@@ -82,18 +85,31 @@ void TakeScreenshotAction::execute(const AgentCommand& command, const QString& w
 
     QPixmap croppedShot = captureProcessWindow(pid);
     
-    // privacy intercept: explicitly show the user what the agent is about to see
+    if (croppedShot.isNull()) {
+         emit actionFinished("[system error: failed to capture window. it may be minimized or hidden.]");
+         return;
+    }
+    
     QMessageBox imgBox;
     imgBox.setWindowTitle("Security Intercept: Approve Image");
-    imgBox.setText("The agent wants to send this image to the API. Do you approve?");
+    imgBox.setText("The agent wants to read this image. Do you approve?");
     imgBox.setIconPixmap(croppedShot.scaledToWidth(400, Qt::SmoothTransformation));
     imgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
     
     if (imgBox.exec() == QMessageBox::Yes) {
-        QString savePath = QDir(workspacePath).absoluteFilePath("agent_vision_capture.png");
+        // 1. Save to disk with a predictable name for the attachment pipeline
+        QString savePath = QDir(workspacePath).absoluteFilePath("latest_agent_screenshot.png");
         croppedShot.save(savePath, "PNG");
-        
-        emit actionFinished(QString("[system success: image saved locally as '%1'. please read the file to analyze the ui.]").arg("agent_vision_capture.png"));
+
+        // 2. Format a lightweight HTML tag using the local file path (NO massive Base64 string!)
+        QString fileUrl = QUrl::fromLocalFile(savePath).toString();
+        QString htmlImage = QString(
+            "<br><br>"
+            "<img src=\"%1\" width=\"100%\" "
+            "style=\"border: 1px solid #475569; border-radius: 4px;\" />"
+        ).arg(fileUrl);
+
+        emit actionFinished(QString("[system take_screenshot]: Visual verification captured.%1").arg(htmlImage));
     } else {
         emit actionFinished("[system error: the human user DENIED the screenshot request due to privacy concerns.]");
     }

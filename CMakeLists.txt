@@ -32,7 +32,6 @@ add_executable(GeminiNativeAgent WIN32
     tool_schema_provider.cpp
     gemini_payload_builder.cpp
     write_file_action.cpp
-    execute_code_action.cpp
     ftp_upload_action.cpp
     execute_shell_action.cpp
     take_screenshot_action.cpp

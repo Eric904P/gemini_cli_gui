@@ -368,38 +368,75 @@ void MainWindow::handleNativeFunctionCalls(const QJsonArray& toolCalls) {
         QString functionName = callObj["name"].toString();
         QJsonObject arguments = callObj["arguments"].toObject();
 
-        // The manager parses the call, triggers security modals, and executes isolated classes.
-        // Because of the UI Modals/Event Loops, this synchronously halts until approved/denied.
-        // Every signal emitted during this loop will be caught by onAgentSystemFeedback.
         agentController->processFunctionCall(functionName, arguments, currentWorkspacePath);
     }
 
     isBatchProcessing = false;
 
-    // --- CRITICAL FIX: Send ONE network response back to the LLM for the entire batch ---
     QString finalFeedback = batchSystemFeedback.trimmed();
     if (!finalFeedback.isEmpty()) {
         saveInteractionToDb("system", finalFeedback);
         QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
-        apiClient->sendPrompt(history, finalFeedback);
+        
+        // --- ATTACHMENT PIPELINE INJECTION ---
+        QStringList systemAttachments;
+        QString screenshotPath = QDir(currentWorkspacePath).absoluteFilePath("latest_agent_screenshot.png");
+        
+        if (QFile::exists(screenshotPath)) {
+            systemAttachments.append(screenshotPath); // Add the image!
+        }
+
+        // Send the batch response WITH the attachments
+        apiClient->sendPrompt(history, finalFeedback, systemAttachments);
+
+        // Clean up the image
+        if (QFile::exists(screenshotPath)) {
+            QFile::remove(screenshotPath);
+        }
     }
 }
 
 void MainWindow::onAgentSystemFeedback(const QString& feedback) {
-    // 1. Ensure the user actually sees the agent's actions in the UI!
-    chatDisplay->append(feedback);
+    // 1. Trap visual fluff: Print it to the UI, but DO NOT send to the API or Database!
+    if (feedback.startsWith("UI_ONLY:")) {
+        chatDisplay->append(feedback.mid(8));
+        return; 
+    }
 
-    // 2. Strip HTML tags so the LLM doesn't get confused by our UI styling
-    QString cleanFeedback = feedback;
-    cleanFeedback.replace(QRegularExpression("<[^>]*>"), "");
+    // 2. Safely separate the UI rendering from the API payload (No dangerous Regex!)
+    QString displayFeedback = feedback;
+    QString apiFeedback = feedback;
 
-    // 3. Intercept the network call if we are processing a batch of tools
+    if (feedback.contains("Visual verification captured.")) {
+        int splitIndex = feedback.indexOf("<br><br><img");
+        if (splitIndex != -1) {
+            // Strip the HTML image tag for the API, but keep it for the UI display
+            apiFeedback = feedback.left(splitIndex) + " [Screenshot Attached to Payload]";
+        }
+    }
+
+    // 3. Draw the system bubble in the UI
+    chatDisplay->append(formatChatBubble("system", displayFeedback, isDarkTheme));
+
+    // 4. Send the clean API data back to Gemini
     if (isBatchProcessing) {
-        batchSystemFeedback += cleanFeedback + "\n\n";
+        batchSystemFeedback += apiFeedback + "\n\n";
     } else {
-        saveInteractionToDb("system", cleanFeedback);
+        saveInteractionToDb("system", apiFeedback);
         QList<InteractionData> history = dbManager->getInteractions(currentSessionId);
-        apiClient->sendPrompt(history, cleanFeedback);
+        
+        QStringList systemAttachments;
+        QString screenshotPath = QDir(currentWorkspacePath).absoluteFilePath("latest_agent_screenshot.png");
+        
+        if (QFile::exists(screenshotPath)) {
+            systemAttachments.append(screenshotPath); 
+        }
+
+        apiClient->sendPrompt(history, apiFeedback, systemAttachments);
+
+        if (QFile::exists(screenshotPath)) {
+            QFile::remove(screenshotPath);
+        }
     }
 }
 

@@ -18,7 +18,8 @@ QString AgentPromptBuilder::buildSystemInstruction(const QString& workspacePath)
         "1. GIT BATCHING: When using `git_manager`, you are STRICTLY FORBIDDEN from executing single, isolated commands if they are part of a workflow (e.g., add -> commit). You MUST batch operations using the 2D array format. "
         "To authenticate push/pull silently, use: https://$GITHUB_PAT@github.com/Username/Repo.git\n"
         "2. WEB OPS: Use `upload_ftp` to deploy HTML/CSS/JS files, and `fetch_webpage` to verify live DOMs or read external documentation.\n"
-        "3. EXECUTION PROTOCOL: When asked to write a script or program, always use the `execute_shell_command` tool to compile the files, run the executable, and verify the output before presenting the final result. Do not assume your code works on the first try.\n\n"
+        "3. EXECUTION PROTOCOL: When asked to write a script or program, always use the `execute_shell_command` tool to compile the files, run the executable, and verify the output before presenting the final result. Do not assume your code works on the first try. "
+        "ESCAPE HATCH: If you are denied permission to execute a command, or if a runtime environment limitation prevents you from verifying your code after multiple attempts, DO NOT get stuck in a loop. Acknowledge the limitation to the user, provide the unverified code, and stop.\n\n"
         
         "CODING STANDARDS & ARCHITECTURE:\n"
         "1. JavaScript: Adhere strictly to modern MDN JavaScript guidelines (ES6+ features, proper scoping, clean async/await patterns).\n"
