@@ -64,3 +64,33 @@ test.txt
 # macOS / Windows fluff
 .DS_Store
 Thumbs.db
+
+# --- CMake & Qt Build Directories ---
+/bin/
+/build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+
+# --- Bundled Portable Runtimes ---
+# Do not track the massive compiler/node/python binaries!
+/runtimes/
+/bin/Release/runtimes/
+/bin/Debug/runtimes/
+
+# --- Qt Specific ---
+*.user
+*.user.*
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+
+# --- OS & Executables ---
+*.exe
+*.dll
+*.obj
+*.o
+.DS_Store
+Thumbs.db

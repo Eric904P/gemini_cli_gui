@@ -34,6 +34,8 @@ public:
      * @param workspacePath The absolute path to the active sandboxed directory.
      */
     void execute(const AgentCommand& command, const QString& workspacePath) override;
+
+    QString getBundledRuntimePath(const QString& language) const;
 };
 
 #endif // EXECUTE_CODE_ACTION_H
