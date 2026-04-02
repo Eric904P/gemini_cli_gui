@@ -11,6 +11,9 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# tell cmake to generate the json map that IDE linters need to find headers
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # enable qt's automated build tools
 set(CMAKE_AUTOMOC ON) # processes Q_OBJECT macros
 set(CMAKE_AUTORCC ON) # processes resource files (.qrc)
