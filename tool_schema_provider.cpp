@@ -117,5 +117,24 @@ QJsonArray ToolSchemaProvider::getAvailableTools() {
     executeCodeTool["parameters"] = ecParams;
     toolsArray.append(executeCodeTool);
 
+    // --- tool 9: git_manager ---
+    QJsonObject gmItems; gmItems["type"] = "STRING";
+    QJsonObject gmArgs; gmArgs["type"] = "ARRAY"; 
+    gmArgs["description"] = "List of arguments for the git command (e.g., ['commit', '-m', 'Initial commit']). Do not include the word 'git'.";
+    gmArgs["items"] = gmItems;
+    
+    QJsonObject gmProps; gmProps["args"] = gmArgs;
+    QJsonArray gmReq; gmReq.append("args");
+    QJsonObject gmParams; gmParams["type"] = "OBJECT"; 
+    gmParams["properties"] = gmProps; 
+    gmParams["required"] = gmReq;
+
+    QJsonObject gitManagerTool;
+    gitManagerTool["type"] = "function"; 
+    gitManagerTool["name"] = "git_manager";
+    gitManagerTool["description"] = "Executes Git commands in the workspace. Used to check status, stage files, and commit.";
+    gitManagerTool["parameters"] = gmParams;
+    toolsArray.append(gitManagerTool);
+
     return toolsArray;
 }

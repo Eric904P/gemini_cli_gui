@@ -14,6 +14,7 @@
 #include "ftp_upload_action.h"
 #include "execute_shell_action.h"
 #include "take_screenshot_action.h"
+#include "git_manager_action.h"
 
 #include <QMessageBox>
 #include <QWidget>
@@ -25,6 +26,8 @@
 #include <QNetworkReply>
 #include <QUrl>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 
 AgentActionManager::AgentActionManager(QObject* parent) : QObject(parent) {
     registerAction(new WriteFileAction(this));
@@ -34,6 +37,7 @@ AgentActionManager::AgentActionManager(QObject* parent) : QObject(parent) {
     ExecuteShellAction* shellAction = new ExecuteShellAction(this);
     registerAction(shellAction);
     registerAction(new TakeScreenshotAction(shellAction, this));
+    registerAction(new GitManagerAction(this));
 }
 
 AgentActionManager::~AgentActionManager() {}
@@ -85,6 +89,11 @@ void AgentActionManager::processFunctionCall(const QString& functionName, const 
     else if (functionName == "execute_code") {
         command.target = arguments["language"].toString();
         command.payload = arguments["code"].toString();
+    }
+    else if (functionName == "git_manager") {
+        command.target = "Git Repository";
+        // Convert the JSON array into a compact string payload so the action class can decode it
+        command.payload = QJsonDocument(arguments["args"].toArray()).toJson(QJsonDocument::Compact);
     }
     else if (functionName == "execute_shell_command") {
         command.target = arguments["command"].toString(); 

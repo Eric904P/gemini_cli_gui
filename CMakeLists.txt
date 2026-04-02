@@ -35,6 +35,7 @@ add_executable(GeminiNativeAgent
     take_screenshot_action.cpp
     agent_prompt_builder.cpp
     chat_formatter.cpp
+    git_manager_action.cpp
 
     base_agent_action.h
     theme_manager.h
