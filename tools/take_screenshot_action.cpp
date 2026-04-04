@@ -17,28 +17,66 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QWidget>
+#include <QDateTime> // Added for UI cache-busting
 
 // include windows api for precise window cropping during screenshots
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <tlhelp32.h>
+#include <vector>
 
 struct WindowSearchData {
-    DWORD pid;
+    std::vector<DWORD> pids;
     HWND hwnd;
+    long maxArea;
 };
 
-// callback to locate the specific os window owned by the agent's active process
+// helper function to recursively find all child processes of the shell (e.g., cmd.exe -> python.exe)
+void findChildPids(DWORD parentPid, std::vector<DWORD>& pids) {
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32 pe;
+        pe.dwSize = sizeof(PROCESSENTRY32);
+        if (Process32First(hSnap, &pe)) {
+            do {
+                if (pe.th32ParentProcessID == parentPid) {
+                    pids.push_back(pe.th32ProcessID);
+                    findChildPids(pe.th32ProcessID, pids); // recurse just in case
+                }
+            } while (Process32Next(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+    }
+}
+
+// callback to locate the specific os window owned by the agent's active process tree
 BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     WindowSearchData* data = reinterpret_cast<WindowSearchData*>(lParam);
     DWORD processId = 0;
     GetWindowThreadProcessId(hwnd, &processId);
     
-    // stop searching if we find a visible window belonging to the exact pid
-    if (processId == data->pid && IsWindowVisible(hwnd)) {
-        data->hwnd = hwnd;
-        return FALSE; 
+    // check if this window belongs to our shell OR any of its child scripts
+    bool isTargetPid = false;
+    for (DWORD pid : data->pids) {
+        if (processId == pid) { 
+            isTargetPid = true; 
+            break; 
+        }
     }
-    return TRUE;
+    
+    if (isTargetPid && IsWindowVisible(hwnd)) {
+        RECT rect;
+        if (GetWindowRect(hwnd, &rect)) {
+            long area = (rect.right - rect.left) * (rect.bottom - rect.top);
+            
+            // prioritize the largest visible window (avoids grabbing invisible 1x1 tool stubs)
+            if (area > data->maxArea) {
+                data->hwnd = hwnd;
+                data->maxArea = area;
+            }
+        }
+    }
+    return TRUE; // keep searching to ensure we get the primary GUI, not a console wrapper
 }
 #endif
 
@@ -83,7 +121,14 @@ void TakeScreenshotAction::execute(const AgentCommand& command, const QString& w
 
     // --- winapi cropper restoration ---
 #ifdef Q_OS_WIN
-    WindowSearchData searchData = { static_cast<DWORD>(pid), nullptr };
+    WindowSearchData searchData;
+    searchData.hwnd = nullptr;
+    searchData.maxArea = 0;
+    searchData.pids.push_back(static_cast<DWORD>(pid));
+    
+    // populate the tree with all child PIDs so we catch python.exe, node.exe, etc.
+    findChildPids(static_cast<DWORD>(pid), searchData.pids);
+
     EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&searchData));
 
     if (searchData.hwnd) {
@@ -94,7 +139,7 @@ void TakeScreenshotAction::execute(const AgentCommand& command, const QString& w
             int width = rect.right - rect.left;
             int height = rect.bottom - rect.top;
             
-            // successfully cropped to the specific window
+            // successfully cropped to the specific window!
             targetPixmap = fullScreen.copy(x, y, width, height); 
         }
     }
@@ -122,10 +167,13 @@ void TakeScreenshotAction::execute(const AgentCommand& command, const QString& w
         QString filePath = QDir(workspacePath).absoluteFilePath(fileName);
 
         if (scaledPixmap.save(filePath, "PNG")) {
+            // append the current millisecond timestamp so the Qt TextBrowser is forced to reload the image
+            qint64 cacheBuster = QDateTime::currentMSecsSinceEpoch();
+            
             // format the specific string the main window looks for to intercept and attach the file
             QString uiMessage = QString("System [take_screenshot]: Visual verification captured.<br><br>"
-                                        "<img src=\"file:///%1\" width=\"400\" style=\"border-radius: 4px;\">")
-                                        .arg(filePath);
+                                        "<img src=\"file:///%1?v=%2\" width=\"400\" style=\"border-radius: 4px;\">")
+                                        .arg(filePath).arg(cacheBuster);
             emit actionFinished(uiMessage);
         } else {
             emit actionFinished("System Error [take_screenshot]: Failed to save the image buffer to disk.");
