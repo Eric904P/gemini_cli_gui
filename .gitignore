@@ -2,6 +2,7 @@
 build/
 bin/
 out/
+release/
 
 # --- Compiled Artifacts ---
 *.o
