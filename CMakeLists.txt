@@ -98,3 +98,10 @@ target_link_libraries(GeminiNativeAgent PRIVATE
     Qt6::Network
     Qt6::Sql
 )
+
+# Tell CMake what to do with the final executable named "MyApp"
+install(TARGETS GeminiNativeAgent
+    RUNTIME DESTINATION bin  # Executables (.exe) go to /bin
+    LIBRARY DESTINATION lib  # Shared libraries (.dll, .so) go to /lib
+    ARCHIVE DESTINATION lib  # Static libraries (.a, .lib) go to /lib
+)
