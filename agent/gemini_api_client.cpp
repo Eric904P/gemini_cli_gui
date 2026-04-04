@@ -129,7 +129,7 @@ void GeminiApiClient::onNetworkReply(QNetworkReply* reply) {
         return;
     }
     else if (rootObj.contains("status") && rootObj["status"].toString() == "completed") {
-        // The model successfully thought about the prompt, but decided to return 0 output tokens.
+        // the model successfully thought about the prompt, but decided to return 0 output tokens.
         emit responseReceived("*(The agent awaits further instructions.)*", currentApiInteractionId);
         return;
     }

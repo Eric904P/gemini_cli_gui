@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # define the project name and language
-project(GeminiNativeAgent VERSION 1.0 LANGUAGES CXX)
+project(GeminiNativeAgent VERSION 1.1.0 LANGUAGES CXX)
 
 # set project output directory
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
@@ -22,6 +22,9 @@ set(CMAKE_AUTOUIC ON) # processes designer files (.ui)
 # locate the qt6 libraries on the local system
 # note: if cmake fails to find qt, you will need to set CMAKE_PREFIX_PATH
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Sql)
+
+# Override specifically for RELEASE builds
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_SOURCE_DIR}/bin/release)
 
 # define the executable and its source files using relative paths
 add_executable(GeminiNativeAgent WIN32

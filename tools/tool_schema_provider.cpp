@@ -18,8 +18,7 @@
 QJsonArray ToolSchemaProvider::getAvailableTools() {
     QJsonArray toolsArray;
 
-    // Helper lambda to keep the schema construction readable
-    // FIXED: Formats each tool as a flat object with an explicit "type"
+    // helper lambda to keep the schema construction readable
     auto addFunction = [&](const QString& name, const QString& description, const QJsonObject& properties, const QJsonArray& requiredParams) {
         QJsonObject toolObj;
         toolObj["type"] = "function"; // Required flat schema identifier
@@ -37,7 +36,7 @@ QJsonArray ToolSchemaProvider::getAvailableTools() {
 
         toolObj["parameters"] = parameters;
         
-        // Append directly to the root tools array
+        // append directly to the root tools array
         toolsArray.append(toolObj); 
     };
 
@@ -101,6 +100,6 @@ QJsonArray ToolSchemaProvider::getAvailableTools() {
     screenProps["rationale"] = QJsonObject{{"type", "STRING"}, {"description", "why you need visual verification right now."}};
     addFunction("take_screenshot", "captures an image of the primary display to verify gui execution.", screenProps, {});
 
-    // Return the flat array directly (no wrapper required)
+    // return the flat array directly (no wrapper required)
     return toolsArray;
 }

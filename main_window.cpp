@@ -373,7 +373,7 @@ void MainWindow::handleNativeFunctionCalls(const QJsonArray& toolCalls) {
     isBatchProcessing = true;
     batchSystemFeedback.clear();
 
-    // Build a summary of what tools the LLM just triggered
+    // build a summary of what tools the LLM just triggered
     QString actionContext;
 
     // stutter fix variables

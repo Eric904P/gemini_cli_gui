@@ -17,7 +17,7 @@
 #include <QFile>
 #include <QMessageBox>
 #include <QWidget>
-#include <QDateTime> // Added for UI cache-busting
+#include <QDateTime>
 
 // include windows api for precise window cropping during screenshots
 #ifdef Q_OS_WIN
@@ -55,7 +55,7 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
     DWORD processId = 0;
     GetWindowThreadProcessId(hwnd, &processId);
     
-    // check if this window belongs to our shell OR any of its child scripts
+    // check if this window belongs to our shell or any of its child scripts
     bool isTargetPid = false;
     for (DWORD pid : data->pids) {
         if (processId == pid) { 
@@ -76,7 +76,8 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam) {
             }
         }
     }
-    return TRUE; // keep searching to ensure we get the primary GUI, not a console wrapper
+    // keep searching to ensure we get the primary gui, not a console wrapper
+    return TRUE;
 }
 #endif
 
@@ -126,7 +127,7 @@ void TakeScreenshotAction::execute(const AgentCommand& command, const QString& w
     searchData.maxArea = 0;
     searchData.pids.push_back(static_cast<DWORD>(pid));
     
-    // populate the tree with all child PIDs so we catch python.exe, node.exe, etc.
+    // populate the tree with all child pids so we catch python.exe, node.exe, etc.
     findChildPids(static_cast<DWORD>(pid), searchData.pids);
 
     EnumWindows(EnumWindowsProc, reinterpret_cast<LPARAM>(&searchData));
